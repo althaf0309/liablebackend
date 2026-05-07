@@ -1,0 +1,9 @@
+.git
+__pycache__/
+*.pyc
+db.sqlite3
+private_media/
+staticfiles/
+django-proof.log
+django-proof.err.log
+.env

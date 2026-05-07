@@ -1,0 +1,15 @@
+[Unit]
+Description=Liable Backend Gunicorn
+After=network.target
+
+[Service]
+User=ubuntu
+Group=www-data
+WorkingDirectory=/var/www/liablebackend
+EnvironmentFile=/var/www/liablebackend/.env
+ExecStart=/var/www/liablebackend/venv/bin/gunicorn liablewebsite.wsgi:application --workers 3 --bind unix:/run/liablebackend.sock --access-logfile - --error-logfile -
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

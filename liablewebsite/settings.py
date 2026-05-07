@@ -92,6 +92,10 @@ INSTALLED_APPS = [
     "analytics",
 ]
 
+USE_S3_PRIVATE_STORAGE = env_bool("USE_S3_PRIVATE_STORAGE", False)
+if USE_S3_PRIVATE_STORAGE:
+    INSTALLED_APPS.append("storages")
+
 
 MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
@@ -152,6 +156,33 @@ STATIC_ROOT = Path(os.getenv("DJANGO_STATIC_ROOT", BASE_DIR / "staticfiles"))
 PRIVATE_MEDIA_ROOT = Path(os.getenv("PRIVATE_MEDIA_ROOT", BASE_DIR / "private_media"))
 MEDIA_ROOT = PRIVATE_MEDIA_ROOT
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+if USE_S3_PRIVATE_STORAGE:
+    AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID", "")
+    AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY", "")
+    AWS_STORAGE_BUCKET_NAME = os.getenv("AWS_STORAGE_BUCKET_NAME", os.getenv("OBJECT_STORAGE_PRIVATE_BUCKET", ""))
+    AWS_S3_REGION_NAME = os.getenv("AWS_S3_REGION_NAME", os.getenv("OBJECT_STORAGE_REGION", "eu-west-2"))
+    AWS_S3_SIGNATURE_VERSION = os.getenv("AWS_S3_SIGNATURE_VERSION", "s3v4")
+    AWS_DEFAULT_ACL = None
+    AWS_QUERYSTRING_AUTH = True
+    AWS_S3_FILE_OVERWRITE = False
+    AWS_S3_OBJECT_PARAMETERS = {
+        "ServerSideEncryption": os.getenv("AWS_S3_SERVER_SIDE_ENCRYPTION", "AES256"),
+    }
+    AWS_PRIVATE_MEDIA_LOCATION = os.getenv("AWS_PRIVATE_MEDIA_LOCATION", "private-media")
+    STORAGES = {
+        "default": {
+            "BACKEND": "core.storage.PrivateMediaStorage",
+            "OPTIONS": {
+                "bucket_name": AWS_STORAGE_BUCKET_NAME,
+                "region_name": AWS_S3_REGION_NAME,
+                "location": AWS_PRIVATE_MEDIA_LOCATION,
+            },
+        },
+        "staticfiles": {
+            "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+        },
+    }
 
 
 REST_FRAMEWORK = {
