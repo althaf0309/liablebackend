@@ -44,7 +44,7 @@ def build_ptr_certificate_pdf(record):
     student_name = record.user.full_name or record.user.email
     lines = [
         ("Liable Group Services Ltd", 18),
-        ("Portable Tenancy Reputation Certificate", 16),
+        ("Verified Tenancy Record Certificate", 16),
         (record.badge_label, 14),
         (f"Student: {student_name}", 11),
         (f"Property: {record.property.title}", 11),
@@ -53,7 +53,7 @@ def build_ptr_certificate_pdf(record):
         (f"THS Snapshot: {record.ths_score_snapshot} / 100", 11),
         (f"Certificate Code: {record.certificate_code}", 11),
         (f"Issued: {record.issued_at.date().isoformat()}", 11),
-        ("Verification Note: This certificate confirms an operational tenancy record inside Liable. It does not disclose visa, financial documents, complaint details, or raw scoring factors.", 9),
+        ("Verification Note: This certificate confirms an operational tenancy completion record inside Liable. It is separate from PTR, the Property Trust Record, and does not disclose visa, financial documents, complaint details, or raw scoring factors.", 9),
     ]
     text_ops = [
         "0.05 0.17 0.21 rg",
