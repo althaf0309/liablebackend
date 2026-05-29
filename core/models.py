@@ -397,6 +397,53 @@ class PropMatchResult(models.Model):
         return f"Match #{self.rank} {self.user.email} -> {self.property.title}"
 
 
+class ApplicationStage(models.TextChoices):
+    APPLICATION = "APPLICATION", "Application"
+    VERIFICATION = "VERIFICATION", "Verification"
+    MATCHING = "MATCHING", "Matching"
+    MOVE_IN = "MOVE_IN", "Move-in"
+    CARE = "CARE", "Care"
+    SUPPORT = "SUPPORT", "Support"
+    RENEWAL = "RENEWAL", "Renewal"
+    COMPLETED = "COMPLETED", "Completed"
+    CANCELLED = "CANCELLED", "Cancelled"
+
+
+class ApplicationStatus(models.TextChoices):
+    ACTIVE = "ACTIVE", "Active"
+    PAUSED = "PAUSED", "Paused"
+    COMPLETED = "COMPLETED", "Completed"
+    CANCELLED = "CANCELLED", "Cancelled"
+
+
+class HousingApplication(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey("accounts.User", on_delete=models.CASCADE, related_name="housing_applications")
+    property = models.ForeignKey(Property, null=True, blank=True, on_delete=models.SET_NULL, related_name="housing_applications")
+    prop_match = models.ForeignKey(PropMatchResult, null=True, blank=True, on_delete=models.SET_NULL, related_name="housing_applications")
+
+    stage = models.CharField(max_length=30, choices=ApplicationStage.choices, default=ApplicationStage.APPLICATION)
+    status = models.CharField(max_length=20, choices=ApplicationStatus.choices, default=ApplicationStatus.ACTIVE)
+    stage_notes = models.CharField(max_length=240, blank=True)
+    next_action = models.CharField(max_length=240, blank=True)
+    target_move_in_date = models.DateField(null=True, blank=True)
+    stage_history = models.JSONField(default=list, blank=True)
+
+    created_at = models.DateTimeField(default=timezone.now)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["user", "stage"]),
+            models.Index(fields=["property", "stage"]),
+            models.Index(fields=["status"]),
+            models.Index(fields=["updated_at"]),
+        ]
+
+    def __str__(self):
+        return f"{self.user.email} - {self.stage}"
+
+
 class TenancyStatus(models.TextChoices):
     PENDING = "PENDING", "Pending"
     ACTIVE = "ACTIVE", "Active"
@@ -547,6 +594,13 @@ class StudentDocument(models.Model):
     file_size = models.PositiveIntegerField(default=0)
     verification_status = models.CharField(max_length=20, choices=VerificationState.choices, default=VerificationState.PENDING)
     admin_notes = models.TextField(blank=True)
+    reviewed_by = models.ForeignKey(
+        "accounts.User",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="reviewed_student_documents",
+    )
     uploaded_at = models.DateTimeField(default=timezone.now)
     reviewed_at = models.DateTimeField(null=True, blank=True)
 

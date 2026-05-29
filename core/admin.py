@@ -120,6 +120,14 @@ class PropMatchResultAdmin(admin.ModelAdmin):
     search_fields = ("user__email", "property__title")
 
 
+@admin.register(HousingApplication)
+class HousingApplicationAdmin(admin.ModelAdmin):
+    list_display = ("user", "property", "stage", "status", "target_move_in_date", "updated_at")
+    list_filter = ("stage", "status", "target_move_in_date")
+    search_fields = ("user__email", "user__full_name", "property__title")
+    readonly_fields = ("id", "stage_history", "created_at", "updated_at")
+
+
 @admin.register(Tenancy)
 class TenancyAdmin(admin.ModelAdmin):
     list_display = ("user", "property", "status", "start_date", "end_date", "rent_amount")

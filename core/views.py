@@ -14,6 +14,8 @@ from rest_framework.views import APIView
 from .engines import calculate_isra_for_user, run_propmatch_for_user
 from .models import *
 from .serializers import *
+from .audit import write_audit_log
+from .quantum_flow import create_application_for_user
 from .throttles import ContactCreateRateThrottle
 from .tenancy_intelligence import refresh_tenancy_health_score
 
@@ -53,7 +55,8 @@ def build_ptr_certificate_pdf(record):
         (f"THS Snapshot: {record.ths_score_snapshot} / 100", 11),
         (f"Certificate Code: {record.certificate_code}", 11),
         (f"Issued: {record.issued_at.date().isoformat()}", 11),
-        ("Verification Note: This certificate confirms an operational tenancy completion record inside Liable. It is separate from PTR, the Property Trust Record, and does not disclose visa, financial documents, complaint details, or raw scoring factors.", 9),
+        ("Privacy Note: This certificate confirms successful occupancy history without exposing private documents, immigration details, sensitive financial evidence, raw complaint narratives, or raw scoring factors.", 9),
+        ("Operational Note: This student completion record is separate from the Property Trust Record, which evaluates property-side reliability.", 9),
     ]
     text_ops = [
         "0.05 0.17 0.21 rg",
@@ -270,6 +273,37 @@ class MyPropMatchView(APIView):
         return Response(PropMatchResultSerializer(results, many=True).data)
 
 
+class MyHousingApplicationListCreateView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        applications = (
+            HousingApplication.objects
+            .filter(user=request.user)
+            .select_related("property", "prop_match", "user")
+            .order_by("-updated_at")
+        )
+        return Response(HousingApplicationSerializer(applications, many=True).data)
+
+    def post(self, request):
+        property_id = request.data.get("property")
+        match_id = request.data.get("prop_match")
+        property_obj = Property.objects.filter(id=property_id).first() if property_id else None
+        prop_match = PropMatchResult.objects.filter(id=match_id, user=request.user).first() if match_id else None
+        if match_id and not prop_match:
+            return Response({"detail": "PropMatch result not found"}, status=status.HTTP_404_NOT_FOUND)
+        if prop_match and not property_obj:
+            property_obj = prop_match.property
+        application = create_application_for_user(
+            request.user,
+            property_obj=property_obj,
+            prop_match=prop_match,
+            target_move_in_date=request.data.get("target_move_in_date") or None,
+        )
+        write_audit_log(request, "housing_application.create", application, {"stage": application.stage})
+        return Response(HousingApplicationSerializer(application).data, status=status.HTTP_201_CREATED)
+
+
 class MyTenancyListView(ListAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = TenancySerializer
@@ -384,6 +418,16 @@ class MyStudentDocumentListCreateView(APIView):
             content_type=uploaded_file.content_type or "",
             file_size=uploaded_file.size,
         )
+        write_audit_log(
+            request,
+            "student_document.upload",
+            document,
+            {
+                "document_type": document.document_type,
+                "content_type": document.content_type,
+                "file_size": document.file_size,
+            },
+        )
         return Response(StudentDocumentSerializer(document).data, status=status.HTTP_201_CREATED)
 
 
@@ -409,6 +453,16 @@ class MyComplaintAttachmentCreateView(APIView):
             content_type=uploaded_file.content_type or "",
             file_size=uploaded_file.size,
         )
+        write_audit_log(
+            request,
+            "complaint_attachment.upload",
+            attachment,
+            {
+                "complaint_id": str(complaint.id),
+                "content_type": attachment.content_type,
+                "file_size": attachment.file_size,
+            },
+        )
         return Response(ComplaintAttachmentSerializer(attachment).data, status=status.HTTP_201_CREATED)
 
 
@@ -421,6 +475,17 @@ class PrivateStudentDocumentDownloadView(APIView):
             return Response({"detail": "Document not found"}, status=status.HTTP_404_NOT_FOUND)
         if request.user.role not in ["ADMIN", "STAFF"] and document.user_id != request.user.id:
             return Response({"detail": "Not allowed"}, status=status.HTTP_403_FORBIDDEN)
+        write_audit_log(
+            request,
+            "student_document.download",
+            document,
+            {
+                "document_owner_id": str(document.user_id),
+                "document_type": document.document_type,
+                "content_type": document.content_type,
+                "file_size": document.file_size,
+            },
+        )
         return FileResponse(document.file.open("rb"), as_attachment=True, filename=document.original_filename)
 
 
@@ -434,6 +499,17 @@ class PrivateComplaintAttachmentDownloadView(APIView):
         allowed = request.user.role in ["ADMIN", "STAFF"] or attachment.complaint.user_id == request.user.id
         if not allowed:
             return Response({"detail": "Not allowed"}, status=status.HTTP_403_FORBIDDEN)
+        write_audit_log(
+            request,
+            "complaint_attachment.download",
+            attachment,
+            {
+                "complaint_id": str(attachment.complaint_id),
+                "complaint_owner_id": str(attachment.complaint.user_id),
+                "content_type": attachment.content_type,
+                "file_size": attachment.file_size,
+            },
+        )
         return FileResponse(attachment.file.open("rb"), as_attachment=True, filename=attachment.original_filename)
 
 

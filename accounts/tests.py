@@ -12,6 +12,13 @@ class AccountSecurityTests(TestCase):
         response = self.client.get("/api/accounts/auth/csrf/")
         return response.cookies["csrftoken"].value
 
+    def test_csrf_endpoint_returns_token_for_cross_subdomain_frontends(self):
+        response = self.client.get("/api/accounts/auth/csrf/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("csrftoken", response.cookies)
+        self.assertTrue(response.data["csrfToken"])
+
     def test_existing_user_cannot_be_overwritten_by_public_registration(self):
         user = User.objects.create_user(
             email="admin@example.com",

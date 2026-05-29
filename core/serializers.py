@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from .models import *
+from .quantum_flow import flow_progress_index, flow_stage_label
 
 
 class PropertyImageSerializer(serializers.ModelSerializer):
@@ -175,6 +176,35 @@ class PropMatchResultSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+class HousingApplicationSerializer(serializers.ModelSerializer):
+    user_email = serializers.EmailField(source="user.email", read_only=True)
+    user_name = serializers.CharField(source="user.full_name", read_only=True)
+    property_title = serializers.CharField(source="property.title", read_only=True)
+    stage_label = serializers.SerializerMethodField()
+    progress_index = serializers.SerializerMethodField()
+
+    class Meta:
+        model = HousingApplication
+        fields = [
+            "id", "user", "user_email", "user_name",
+            "property", "property_title", "prop_match",
+            "stage", "stage_label", "status", "progress_index",
+            "stage_notes", "next_action", "target_move_in_date",
+            "stage_history", "created_at", "updated_at",
+        ]
+        read_only_fields = [
+            "id", "user_email", "user_name", "property_title",
+            "stage_label", "progress_index", "stage_history",
+            "created_at", "updated_at",
+        ]
+
+    def get_stage_label(self, obj):
+        return flow_stage_label(obj.stage)
+
+    def get_progress_index(self, obj):
+        return flow_progress_index(obj.stage)
+
+
 class TenancySerializer(serializers.ModelSerializer):
     property_title = serializers.CharField(source="property.title", read_only=True)
     user_email = serializers.EmailField(source="user.email", read_only=True)
@@ -201,6 +231,10 @@ class TenancyHealthScoreSerializer(serializers.ModelSerializer):
     tenancy_property = serializers.CharField(source="tenancy.property.title", read_only=True)
     tenant_email = serializers.EmailField(source="tenancy.user.email", read_only=True)
     events = TenancyHealthEventSerializer(source="tenancy.health_events", many=True, read_only=True)
+    indicator = serializers.SerializerMethodField()
+    indicator_label = serializers.SerializerMethodField()
+    support_summary = serializers.SerializerMethodField()
+    tracked_signals = serializers.SerializerMethodField()
 
     class Meta:
         model = TenancyHealthScore
@@ -208,16 +242,47 @@ class TenancyHealthScoreSerializer(serializers.ModelSerializer):
             "id", "tenancy", "tenancy_property", "tenant_email",
             "score", "band", "rent_signal", "complaint_signal",
             "communication_signal", "trend", "summary",
+            "indicator", "indicator_label", "support_summary", "tracked_signals",
             "reason_codes", "policy_version",
             "calculated_at", "updated_at", "events",
         ]
         read_only_fields = fields
+
+    def get_indicator(self, obj):
+        if obj.band == RiskBand.LOW:
+            return "HEALTHY"
+        if obj.band == RiskBand.MEDIUM:
+            return "STABLE"
+        return "NEEDS_ATTENTION"
+
+    def get_indicator_label(self, obj):
+        if obj.band == RiskBand.LOW:
+            return "Healthy"
+        if obj.band == RiskBand.MEDIUM:
+            return "Stable"
+        return "Needs Attention"
+
+    def get_support_summary(self, obj):
+        return obj.summary
+
+    def get_tracked_signals(self, obj):
+        return [
+            {"key": "rent_behaviour", "label": "Rent behaviour", "value": obj.rent_signal},
+            {"key": "complaints", "label": "Complaints", "value": obj.complaint_signal},
+            {"key": "communication", "label": "Communication", "value": obj.communication_signal},
+            {"key": "tenancy_stability", "label": "Tenancy stability", "value": obj.score},
+            {"key": "property_care", "label": "Property care", "value": obj.complaint_signal},
+            {"key": "occupancy_continuity", "label": "Occupancy continuity", "value": obj.score},
+        ]
 
 
 class TenancyRecordSerializer(serializers.ModelSerializer):
     property_title = serializers.CharField(source="property.title", read_only=True)
     user_email = serializers.EmailField(source="user.email", read_only=True)
     certificate_url = serializers.SerializerMethodField()
+    includes = serializers.SerializerMethodField()
+    excludes = serializers.SerializerMethodField()
+    privacy_statement = serializers.SerializerMethodField()
 
     class Meta:
         model = TenancyRecord
@@ -225,11 +290,31 @@ class TenancyRecordSerializer(serializers.ModelSerializer):
             "id", "user", "user_email", "tenancy", "property", "property_title",
             "badge_label", "outcome", "ths_score_snapshot",
             "certificate_code", "issued_at", "certificate_url",
+            "includes", "excludes", "privacy_statement",
         ]
         read_only_fields = fields
 
     def get_certificate_url(self, obj):
         return f"/api/core/tenancy-records/{obj.id}/certificate/"
+
+    def get_includes(self, obj):
+        return [
+            "tenancy completion status",
+            "tenancy duration",
+            "supportive tenancy health snapshot",
+            "property and occupancy completion reference",
+        ]
+
+    def get_excludes(self, obj):
+        return [
+            "raw complaint narratives",
+            "private uploaded documents",
+            "immigration details",
+            "sensitive financial evidence",
+        ]
+
+    def get_privacy_statement(self, obj):
+        return "This record confirms successful occupancy history without exposing sensitive student documents, raw complaint details, immigration data, or private financial evidence."
 
 
 class AuditLogSerializer(serializers.ModelSerializer):
@@ -281,21 +366,47 @@ class StudentDocumentSerializer(serializers.ModelSerializer):
     download_url = serializers.SerializerMethodField()
     user_email = serializers.EmailField(source="user.email", read_only=True)
     user_name = serializers.CharField(source="user.full_name", read_only=True)
+    reviewed_by_email = serializers.EmailField(source="reviewed_by.email", read_only=True)
+    student_review_message = serializers.SerializerMethodField()
 
     class Meta:
         model = StudentDocument
         fields = [
             "id", "user", "user_email", "user_name", "document_type", "original_filename", "content_type",
             "file_size", "verification_status", "admin_notes",
+            "reviewed_by", "reviewed_by_email", "student_review_message",
             "uploaded_at", "reviewed_at", "download_url",
         ]
         read_only_fields = [
             "id", "user", "original_filename", "content_type", "file_size",
+            "reviewed_by", "reviewed_by_email", "student_review_message",
             "uploaded_at", "reviewed_at", "download_url",
         ]
 
     def get_download_url(self, obj):
         return f"/api/core/documents/{obj.id}/download/"
+
+    def get_student_review_message(self, obj):
+        if obj.verification_status == VerificationState.APPROVED:
+            return "Document verified by LGS operations."
+        if obj.verification_status == VerificationState.REJECTED:
+            return "Document needs review. Please contact LGS support or upload an updated file."
+        return "Document received and waiting for LGS verification."
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        is_admin_view = bool(
+            user
+            and getattr(user, "is_authenticated", False)
+            and (getattr(user, "is_superuser", False) or getattr(user, "is_staff", False) or getattr(user, "role", "") in ["ADMIN", "STAFF"])
+        )
+        if not is_admin_view:
+            data.pop("admin_notes", None)
+            data.pop("reviewed_by", None)
+            data.pop("reviewed_by_email", None)
+        return data
 
 
 class ComplaintAttachmentSerializer(serializers.ModelSerializer):

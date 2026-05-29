@@ -6,7 +6,7 @@ from rest_framework.authentication import SessionAuthentication
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from accounts.permissions import IsAdminOrStaff
+from accounts.permissions import IsAdminOrStaff, IsAdminOrStaffReadOnlyOrAdminWrite
 from accounts.models import UserRole
 
 from .engines import calculate_isra_for_user, run_propmatch_for_user
@@ -15,6 +15,7 @@ from .models import (
     AuditLog,
     Complaint,
     ComplaintAttachment,
+    HousingApplication,
     IntentForm,
     ISRAscore,
     PropMatchResult,
@@ -33,6 +34,7 @@ from .serializers import (
     ComplaintSerializer,
     AuditLogSerializer,
     ComplaintAttachmentSerializer,
+    HousingApplicationSerializer,
     IntentFormSerializer,
     ISRAscoreSerializer,
     PropMatchResultSerializer,
@@ -46,20 +48,10 @@ from .serializers import (
     YOEMetricSerializer,
     StudentDocumentSerializer,
 )
+from .audit import write_audit_log
+from .quantum_flow import advance_application_stage
 from .yoe import calculate_yoe_for_property, refresh_yoe_metrics
 from .tenancy_intelligence import refresh_tenancy_health_score, refresh_all_tenancy_health_scores, void_risk_rows
-
-
-def write_audit_log(request, action, target=None, metadata=None):
-    target_type = target.__class__.__name__ if target is not None else ""
-    target_id = str(getattr(target, "id", "")) if target is not None else ""
-    AuditLog.objects.create(
-        actor=request.user if request.user.is_authenticated else None,
-        action=action,
-        target_type=target_type,
-        target_id=target_id,
-        metadata=metadata or {},
-    )
 
 
 class AdminAuditMixin:
@@ -306,7 +298,7 @@ class AdminIntentFormDetailView(AdminAuditMixin, generics.RetrieveUpdateDestroyA
 class AdminISRAscoreListCreateView(AdminAuditMixin, generics.ListCreateAPIView):
     audit_label = "isra_score"
     authentication_classes = [SessionAuthentication]
-    permission_classes = [IsAdminOrStaff]
+    permission_classes = [IsAdminOrStaffReadOnlyOrAdminWrite]
     serializer_class = ISRAscoreSerializer
 
     def get_queryset(self):
@@ -336,7 +328,7 @@ class AdminISRAscoreListCreateView(AdminAuditMixin, generics.ListCreateAPIView):
 class AdminISRAscoreDetailView(AdminAuditMixin, generics.RetrieveUpdateDestroyAPIView):
     audit_label = "isra_score"
     authentication_classes = [SessionAuthentication]
-    permission_classes = [IsAdminOrStaff]
+    permission_classes = [IsAdminOrStaffReadOnlyOrAdminWrite]
     serializer_class = ISRAscoreSerializer
     queryset = ISRAscore.objects.select_related("user", "user__intent_form")
     lookup_field = "id"
@@ -396,6 +388,48 @@ class AdminPropMatchResultListView(generics.ListAPIView):
         if user_id:
             qs = qs.filter(user_id=user_id)
         return qs.order_by("user_id", "rank")
+
+
+class AdminHousingApplicationListCreateView(AdminAuditMixin, generics.ListCreateAPIView):
+    audit_label = "housing_application"
+    authentication_classes = [SessionAuthentication]
+    permission_classes = [IsAdminOrStaff]
+    serializer_class = HousingApplicationSerializer
+
+    def get_queryset(self):
+        qs = HousingApplication.objects.select_related("user", "property", "prop_match").order_by("-updated_at")
+        q = (self.request.query_params.get("q") or "").strip()
+        stage = (self.request.query_params.get("stage") or "").strip().upper()
+        status_value = (self.request.query_params.get("status") or "").strip().upper()
+        if q:
+            qs = qs.filter(Q(user__email__icontains=q) | Q(user__full_name__icontains=q) | Q(property__title__icontains=q))
+        if stage:
+            qs = qs.filter(stage=stage)
+        if status_value:
+            qs = qs.filter(status=status_value)
+        return qs
+
+    def perform_create(self, serializer):
+        application = serializer.save()
+        if not application.next_action:
+            advance_application_stage(application, application.stage, actor=self.request.user)
+        write_audit_log(self.request, "housing_application.create", application, {"stage": application.stage})
+
+
+class AdminHousingApplicationDetailView(AdminAuditMixin, generics.RetrieveUpdateDestroyAPIView):
+    audit_label = "housing_application"
+    authentication_classes = [SessionAuthentication]
+    permission_classes = [IsAdminOrStaff]
+    serializer_class = HousingApplicationSerializer
+    queryset = HousingApplication.objects.select_related("user", "property", "prop_match")
+    lookup_field = "id"
+
+    def perform_update(self, serializer):
+        previous_stage = self.get_object().stage
+        application = serializer.save()
+        if application.stage != previous_stage:
+            advance_application_stage(application, application.stage, actor=self.request.user, previous_stage=previous_stage)
+        write_audit_log(self.request, "housing_application.update", application, {"stage": application.stage})
 
 
 class AdminTenancyListCreateView(AdminAuditMixin, generics.ListCreateAPIView):
@@ -511,8 +545,18 @@ class AdminStudentDocumentDetailView(AdminAuditMixin, generics.RetrieveUpdateAPI
         instance = serializer.save()
         if instance.verification_status != "PENDING" and not instance.reviewed_at:
             instance.reviewed_at = timezone.now()
-            instance.save(update_fields=["reviewed_at"])
-        write_audit_log(self.request, "student_document.review", instance, {"status": instance.verification_status})
+        if instance.verification_status != "PENDING":
+            instance.reviewed_by = self.request.user
+        instance.save(update_fields=["reviewed_at", "reviewed_by"])
+        write_audit_log(
+            self.request,
+            "student_document.review",
+            instance,
+            {
+                "status": instance.verification_status,
+                "reviewed_by": str(self.request.user.id),
+            },
+        )
 
 
 class AdminComplaintAttachmentListView(generics.ListAPIView):
@@ -615,4 +659,18 @@ class AdminAuditLogListView(generics.ListAPIView):
     serializer_class = AuditLogSerializer
 
     def get_queryset(self):
-        return AuditLog.objects.select_related("actor").order_by("-created_at")[:250]
+        qs = AuditLog.objects.select_related("actor").order_by("-created_at")
+        action = (self.request.query_params.get("action") or "").strip()
+        actor_id = (self.request.query_params.get("actor_id") or "").strip()
+        target_type = (self.request.query_params.get("target_type") or "").strip()
+        target_id = (self.request.query_params.get("target_id") or "").strip()
+
+        if action:
+            qs = qs.filter(action__icontains=action)
+        if actor_id:
+            qs = qs.filter(actor_id=actor_id)
+        if target_type:
+            qs = qs.filter(target_type__iexact=target_type)
+        if target_id:
+            qs = qs.filter(target_id=target_id)
+        return qs[:250]

@@ -2,6 +2,7 @@ from django.db import transaction
 from django.utils import timezone
 from django.contrib.auth import login as dj_login
 from django.contrib.auth import logout as dj_logout
+from django.middleware.csrf import get_token
 from django.views.decorators.csrf import csrf_protect, ensure_csrf_cookie
 from django.utils.decorators import method_decorator
 
@@ -51,7 +52,7 @@ class CsrfView(APIView):
     authentication_classes = []
 
     def get(self, request):
-        return Response({"detail": "CSRF cookie set"}, status=status.HTTP_200_OK)
+        return Response({"detail": "CSRF cookie set", "csrfToken": get_token(request)}, status=status.HTTP_200_OK)
 
 
 # -----------------------------

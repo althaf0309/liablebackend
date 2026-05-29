@@ -27,6 +27,22 @@ def _band(score):
     return RiskBand.HIGH
 
 
+def ths_indicator_for_band(band):
+    if band == RiskBand.LOW:
+        return "Healthy"
+    if band == RiskBand.MEDIUM:
+        return "Stable"
+    return "Needs Attention"
+
+
+def ths_support_summary(score):
+    if score >= 80:
+        return "Tenancy is operating smoothly. Continue normal supportive management."
+    if score >= 60:
+        return "Tenancy is stable. Keep routine communication and monitor normal support signals."
+    return "Tenancy needs attention. Review support actions early to reduce avoidable breakdown."
+
+
 def _intake_window(end_date):
     month = end_date.month
     if month in (7, 8, 9, 10):
@@ -137,21 +153,25 @@ def refresh_tenancy_health_score(tenancy):
 
     recent = sum(event.weight for event in events[-3:])
     trend = "UP" if recent > 3 else "DOWN" if recent < -3 else "STABLE"
-    summary = "Healthy tenancy" if score >= 80 else "Monitor tenancy" if score >= 60 else "Intervention required"
+    summary = ths_support_summary(score)
     reason_codes = []
     if any(row.status == RentLedgerStatus.OVERDUE for row in ledger_rows):
-        reason_codes.append({"code": "RENT_OVERDUE", "label": "Overdue rent row detected", "severity": "HIGH"})
+        reason_codes.append({"code": "RENT_BEHAVIOUR_NEEDS_REVIEW", "label": "Rent behaviour needs supportive follow-up", "severity": "HIGH", "signal": "rent_behaviour"})
     if any(row.status == RentLedgerStatus.PAID for row in ledger_rows):
-        reason_codes.append({"code": "RENT_PAID", "label": "Paid rent row improves tenancy stability", "severity": "LOW"})
+        reason_codes.append({"code": "RENT_CONSISTENCY", "label": "Payment consistency supports tenancy stability", "severity": "LOW", "signal": "rent_behaviour"})
     open_complaints = [c for c in complaints if c.status != ComplaintStatus.RESOLVED]
     if open_complaints:
-        reason_codes.append({"code": "OPEN_COMPLAINT", "label": "Open complaint requires admin monitoring", "severity": "MEDIUM"})
+        reason_codes.append({"code": "SUPPORT_REQUEST_OPEN", "label": "Open support issue should remain visible to operations", "severity": "MEDIUM", "signal": "complaints"})
     if complaints and not open_complaints:
-        reason_codes.append({"code": "COMPLAINTS_RESOLVED", "label": "Complaint history resolved through workflow", "severity": "LOW"})
+        reason_codes.append({"code": "SUPPORT_REQUEST_RESOLVED", "label": "Support issue resolved through the workflow", "severity": "LOW", "signal": "property_care"})
     if tenancy.extension_requested:
-        reason_codes.append({"code": "EXTENSION_REQUESTED", "label": "Student requested extension through controlled workflow", "severity": "LOW"})
+        reason_codes.append({"code": "OCCUPANCY_CONTINUITY_SIGNAL", "label": "Extension request supports occupancy continuity planning", "severity": "LOW", "signal": "occupancy_continuity"})
+    if communication_signal >= 75:
+        reason_codes.append({"code": "COMMUNICATION_STABLE", "label": "Communication signal is stable", "severity": "LOW", "signal": "communication"})
+    if tenancy.status == TenancyStatus.ACTIVE:
+        reason_codes.append({"code": "TENANCY_ACTIVE", "label": "Active tenancy is included in live monitoring", "severity": "LOW", "signal": "tenancy_stability"})
     if not reason_codes:
-        reason_codes.append({"code": "NO_NEGATIVE_EVENTS", "label": "No negative tenancy events recorded", "severity": "LOW"})
+        reason_codes.append({"code": "NO_SUPPORT_ALERTS", "label": "No support alerts currently recorded", "severity": "LOW", "signal": "tenancy_stability"})
 
     health, _ = TenancyHealthScore.objects.update_or_create(
         tenancy=tenancy,
@@ -164,7 +184,7 @@ def refresh_tenancy_health_score(tenancy):
             "trend": trend,
             "summary": summary,
             "reason_codes": reason_codes[:5],
-            "policy_version": "THS-Y1-2",
+            "policy_version": "THS-Y1-3",
             "calculated_at": timezone.now(),
         },
     )
@@ -190,8 +210,8 @@ def maybe_create_portable_record(tenancy, health=None):
         defaults={
             "user": tenancy.user,
             "property": tenancy.property,
-            "badge_label": "Verified Tenant",
-            "outcome": "Completed Successfully",
+            "badge_label": "Verified Tenancy Completion",
+            "outcome": "Successful occupancy completed",
             "ths_score_snapshot": health.score,
             "certificate_code": code,
             "issued_at": timezone.now(),
