@@ -43,6 +43,27 @@ def email_account_approved(to_email: str, name: str, login_email: str, temp_pass
     msg.send(fail_silently=False)
 
 
+def email_application_stage_update(to_email: str, name: str, stage_label: str, message: str, application_code: str):
+    brand = getattr(settings, "MAIL_BRAND_NAME", "Liable")
+    frontend_url = getattr(settings, "FRONTEND_BASE_URL", "")
+    subject = f"{brand} Housing Journey Update — {stage_label}"
+    text = (
+        f"Hi {name},\n\n"
+        f"{message}\n\n"
+        f"Application ref: {application_code}\n\n"
+        f"Log in to your dashboard to view the latest status:\n"
+        f"{frontend_url}\n\n"
+        f"Thanks,\n{brand} Team"
+    )
+    msg = EmailMultiAlternatives(
+        subject=subject,
+        body=text,
+        from_email=settings.EMAIL_HOST_USER,
+        to=[to_email],
+    )
+    msg.send(fail_silently=False)
+
+
 def email_contact_message_admin(**data):
     subject = f"New Contact: {data.get('subject') or 'No subject'}"
 

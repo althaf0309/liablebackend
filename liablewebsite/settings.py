@@ -300,12 +300,16 @@ SENTRY_DSN = os.getenv("SENTRY_DSN", "").strip()
 if SENTRY_DSN:
     try:
         import sentry_sdk
+        from sentry_sdk.integrations.django import DjangoIntegration
     except ImportError as exc:
         raise RuntimeError("SENTRY_DSN is set but sentry-sdk is not installed.") from exc
 
     sentry_sdk.init(
         dsn=SENTRY_DSN,
-        send_default_pii=False,
+        integrations=[DjangoIntegration()],
+        send_default_pii=env_bool("SENTRY_SEND_DEFAULT_PII", False),
         traces_sample_rate=float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.0")),
+        profiles_sample_rate=float(os.getenv("SENTRY_PROFILES_SAMPLE_RATE", "0.0")),
         environment=os.getenv("SENTRY_ENVIRONMENT", "production" if not DEBUG else "development"),
+        release=os.getenv("SENTRY_RELEASE", ""),
     )

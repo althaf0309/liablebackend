@@ -195,6 +195,25 @@ class AnswerUpsertView(APIView):
     authentication_classes = [SessionAuthentication]
     permission_classes = [IsAuthenticated]
 
+    def get(self, request):
+        questions = Question.objects.filter(
+            target_role=request.user.role, is_active=True
+        ).order_by("sort_order", "created_at")
+        existing = {
+            a.question_id: a.answer_text
+            for a in Answer.objects.filter(user=request.user, question__in=questions)
+        }
+        data = [
+            {
+                "question_id": str(q.id),
+                "question_text": q.question_text,
+                "is_required": q.is_required,
+                "answer_text": existing.get(q.id, ""),
+            }
+            for q in questions
+        ]
+        return Response(data, status=status.HTTP_200_OK)
+
     @transaction.atomic
     def post(self, request):
         s = AnswerUpsertSerializer(data=request.data)

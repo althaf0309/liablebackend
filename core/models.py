@@ -13,6 +13,14 @@ def private_document_path(instance, filename):
 def private_complaint_attachment_path(instance, filename):
     return f"complaint-attachments/{instance.complaint_id}/{uuid.uuid4()}-{filename}"
 
+
+def private_care_attachment_path(instance, filename):
+    return f"care-attachments/{instance.ticket_id}/{uuid.uuid4()}-{filename}"
+
+
+def private_support_attachment_path(instance, filename):
+    return f"support-attachments/{instance.support_request_id}/{uuid.uuid4()}-{filename}"
+
 # ------------------- BLOG -------------------
 class BlogPost(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -381,6 +389,10 @@ class PropMatchResult(models.Model):
     isra_pass = models.BooleanField(default=False)
     eligible = models.BooleanField(default=False)
     rationale = models.JSONField(default=dict, blank=True)
+    rule_version = models.CharField(max_length=30, default="QM-Y1-1")
+    score_breakdown = models.JSONField(default=dict, blank=True)
+    hard_fail_reasons = models.JSONField(default=list, blank=True)
+    student_rationale = models.JSONField(default=list, blank=True)
 
     generated_at = models.DateTimeField(default=timezone.now)
 
@@ -390,11 +402,41 @@ class PropMatchResult(models.Model):
         indexes = [
             models.Index(fields=["user", "rank"]),
             models.Index(fields=["eligible"]),
+            models.Index(fields=["rule_version"]),
             models.Index(fields=["generated_at"]),
         ]
 
     def __str__(self):
         return f"Match #{self.rank} {self.user.email} -> {self.property.title}"
+
+
+class PropMatchScoreHistory(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    run_id = models.UUIDField(default=uuid.uuid4, db_index=True)
+    user = models.ForeignKey("accounts.User", on_delete=models.CASCADE, related_name="propmatch_score_history")
+    property = models.ForeignKey(Property, on_delete=models.CASCADE, related_name="propmatch_score_history")
+    rule_version = models.CharField(max_length=30, default="QM-Y1-1")
+    rank = models.PositiveIntegerField(null=True, blank=True)
+    confidence_score = models.PositiveIntegerField(default=0)
+    eligible = models.BooleanField(default=False)
+    budget_pass = models.BooleanField(default=False)
+    availability_pass = models.BooleanField(default=False)
+    isra_pass = models.BooleanField(default=False)
+    occupancy_pass = models.BooleanField(default=False)
+    score_breakdown = models.JSONField(default=dict, blank=True)
+    hard_fail_reasons = models.JSONField(default=list, blank=True)
+    admin_rationale = models.JSONField(default=dict, blank=True)
+    student_rationale = models.JSONField(default=list, blank=True)
+    generated_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        ordering = ["-generated_at", "rank", "-confidence_score"]
+        indexes = [
+            models.Index(fields=["user", "generated_at"]),
+            models.Index(fields=["property", "generated_at"]),
+            models.Index(fields=["rule_version"]),
+            models.Index(fields=["eligible"]),
+        ]
 
 
 class ApplicationStage(models.TextChoices):
@@ -416,11 +458,35 @@ class ApplicationStatus(models.TextChoices):
     CANCELLED = "CANCELLED", "Cancelled"
 
 
+class ApplicationEntryStatus(models.TextChoices):
+    DRAFT = "DRAFT", "Draft"
+    SUBMITTED = "SUBMITTED", "Submitted"
+    IN_REVIEW = "IN_REVIEW", "In Review"
+    RETURNED = "RETURNED", "Returned for Update"
+    READY = "READY", "Ready for Verification"
+
+
+class ApplicationIntakeSource(models.TextChoices):
+    STUDENT_PORTAL = "STUDENT_PORTAL", "Student Portal"
+    ADMIN_CREATED = "ADMIN_CREATED", "Admin Created"
+    PROPMATCH_LOCK = "PROPMATCH_LOCK", "PropMatch Lock"
+    CONTACT_CONVERSION = "CONTACT_CONVERSION", "Contact Conversion"
+
+
 class HousingApplication(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    application_code = models.CharField(max_length=32, unique=True, null=True, blank=True)
     user = models.ForeignKey("accounts.User", on_delete=models.CASCADE, related_name="housing_applications")
     property = models.ForeignKey(Property, null=True, blank=True, on_delete=models.SET_NULL, related_name="housing_applications")
     prop_match = models.ForeignKey(PropMatchResult, null=True, blank=True, on_delete=models.SET_NULL, related_name="housing_applications")
+
+    entry_status = models.CharField(max_length=30, choices=ApplicationEntryStatus.choices, default=ApplicationEntryStatus.SUBMITTED)
+    intake_source = models.CharField(max_length=30, choices=ApplicationIntakeSource.choices, default=ApplicationIntakeSource.STUDENT_PORTAL)
+    applicant_notes = models.TextField(blank=True)
+    admin_entry_notes = models.TextField(blank=True)
+    intake_snapshot = models.JSONField(default=dict, blank=True)
+    submitted_at = models.DateTimeField(null=True, blank=True)
+    entry_reviewed_at = models.DateTimeField(null=True, blank=True)
 
     stage = models.CharField(max_length=30, choices=ApplicationStage.choices, default=ApplicationStage.APPLICATION)
     status = models.CharField(max_length=20, choices=ApplicationStatus.choices, default=ApplicationStatus.ACTIVE)
@@ -437,11 +503,82 @@ class HousingApplication(models.Model):
             models.Index(fields=["user", "stage"]),
             models.Index(fields=["property", "stage"]),
             models.Index(fields=["status"]),
+            models.Index(fields=["entry_status"]),
+            models.Index(fields=["intake_source"]),
             models.Index(fields=["updated_at"]),
         ]
 
     def __str__(self):
-        return f"{self.user.email} - {self.stage}"
+        return f"{self.application_code or self.user.email} - {self.stage}"
+
+    def save(self, *args, **kwargs):
+        if not self.application_code:
+            self.application_code = f"QL-{timezone.now():%Y%m%d}-{str(self.id)[:8].upper()}"
+        if not self.submitted_at and self.entry_status != ApplicationEntryStatus.DRAFT:
+            self.submitted_at = timezone.now()
+        super().save(*args, **kwargs)
+
+
+class TimelineEventType(models.TextChoices):
+    APPLICATION_SUBMITTED = "APPLICATION_SUBMITTED", "Application Submitted"
+    ENTRY_REVIEWED = "ENTRY_REVIEWED", "Entry Reviewed"
+    VERIFICATION_READY = "VERIFICATION_READY", "Verification Ready"
+    STAGE_CHANGED = "STAGE_CHANGED", "Stage Changed"
+    MATCHING_STARTED = "MATCHING_STARTED", "Matching Started"
+    PROPERTY_LOCKED = "PROPERTY_LOCKED", "Property Locked"
+    MOVE_IN_SCHEDULED = "MOVE_IN_SCHEDULED", "Move-in Scheduled"
+    CARE_TICKET_OPENED = "CARE_TICKET_OPENED", "Care Ticket Opened"
+    SUPPORT_REQUEST_OPENED = "SUPPORT_REQUEST_OPENED", "Support Request Opened"
+    RENEWAL_REMINDER = "RENEWAL_REMINDER", "Renewal Reminder"
+    COMPLETED = "COMPLETED", "Completed"
+
+
+class NotificationAudience(models.TextChoices):
+    STUDENT = "STUDENT", "Student"
+    LANDLORD = "LANDLORD", "Landlord"
+    STAFF = "STAFF", "Staff"
+    ADMIN = "ADMIN", "Admin"
+
+
+class ApplicationTimelineEvent(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    application = models.ForeignKey(HousingApplication, on_delete=models.CASCADE, related_name="timeline_events")
+    event_type = models.CharField(max_length=40, choices=TimelineEventType.choices, default=TimelineEventType.STAGE_CHANGED)
+    from_stage = models.CharField(max_length=30, blank=True)
+    to_stage = models.CharField(max_length=30, blank=True)
+    actor = models.ForeignKey("accounts.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="application_timeline_events")
+    student_message = models.CharField(max_length=240)
+    admin_message = models.CharField(max_length=360, blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        ordering = ["created_at"]
+        indexes = [
+            models.Index(fields=["application", "created_at"]),
+            models.Index(fields=["event_type"]),
+            models.Index(fields=["to_stage"]),
+        ]
+
+
+class Notification(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey("accounts.User", on_delete=models.CASCADE, related_name="notifications")
+    application = models.ForeignKey(HousingApplication, null=True, blank=True, on_delete=models.CASCADE, related_name="notifications")
+    timeline_event = models.ForeignKey(ApplicationTimelineEvent, null=True, blank=True, on_delete=models.SET_NULL, related_name="notifications")
+    audience = models.CharField(max_length=20, choices=NotificationAudience.choices)
+    title = models.CharField(max_length=140)
+    message = models.CharField(max_length=360)
+    read_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["user", "read_at"]),
+            models.Index(fields=["application", "created_at"]),
+            models.Index(fields=["audience"]),
+        ]
 
 
 class TenancyStatus(models.TextChoices):
@@ -480,6 +617,8 @@ class THSEventType(models.TextChoices):
     RENT_LATE = "RENT_LATE", "Rent Late"
     COMPLAINT_RAISED = "COMPLAINT_RAISED", "Complaint Raised"
     COMPLAINT_RESOLVED = "COMPLAINT_RESOLVED", "Complaint Resolved"
+    CARE_TICKET_OPENED = "CARE_TICKET_OPENED", "Care Ticket Opened"
+    CARE_TICKET_RESOLVED = "CARE_TICKET_RESOLVED", "Care Ticket Resolved"
     ADMIN_NOTE = "ADMIN_NOTE", "Admin Note"
 
 
@@ -570,11 +709,343 @@ class Complaint(models.Model):
         ]
 
 
+class CareTicketCategory(models.TextChoices):
+    MAINTENANCE = "MAINTENANCE", "Maintenance"
+    SAFETY = "SAFETY", "Safety"
+    ACCESS = "ACCESS", "Access"
+    UTILITIES = "UTILITIES", "Utilities"
+    MOVE_IN = "MOVE_IN", "Move-in Issue"
+    PROPERTY_CARE = "PROPERTY_CARE", "Property Care"
+    OTHER = "OTHER", "Other"
+
+
+class CareTicketStatus(models.TextChoices):
+    OPEN = "OPEN", "Open"
+    TRIAGED = "TRIAGED", "Triaged"
+    ASSIGNED = "ASSIGNED", "Assigned"
+    WAITING_LANDLORD = "WAITING_LANDLORD", "Waiting Landlord"
+    WAITING_TENANT = "WAITING_TENANT", "Waiting Tenant"
+    RESOLVED = "RESOLVED", "Resolved"
+    CLOSED = "CLOSED", "Closed"
+
+
+class CareTicketPriority(models.TextChoices):
+    LOW = "LOW", "Low"
+    MEDIUM = "MEDIUM", "Medium"
+    HIGH = "HIGH", "High"
+    URGENT = "URGENT", "Urgent"
+
+
+class CareTicketEventType(models.TextChoices):
+    CREATED = "CREATED", "Created"
+    STATUS_CHANGED = "STATUS_CHANGED", "Status Changed"
+    ASSIGNED = "ASSIGNED", "Assigned"
+    LANDLORD_UPDATED = "LANDLORD_UPDATED", "Landlord Updated"
+    TENANT_UPDATED = "TENANT_UPDATED", "Tenant Updated"
+    RESOLVED = "RESOLVED", "Resolved"
+    CLOSED = "CLOSED", "Closed"
+
+
+class CareTicket(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey("accounts.User", on_delete=models.CASCADE, related_name="care_tickets")
+    property = models.ForeignKey(Property, on_delete=models.PROTECT, related_name="care_tickets")
+    tenancy = models.ForeignKey(Tenancy, null=True, blank=True, on_delete=models.SET_NULL, related_name="care_tickets")
+    application = models.ForeignKey(HousingApplication, null=True, blank=True, on_delete=models.SET_NULL, related_name="care_tickets")
+    assigned_to = models.ForeignKey(
+        "accounts.User",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="assigned_care_tickets",
+    )
+    category = models.CharField(max_length=30, choices=CareTicketCategory.choices, default=CareTicketCategory.MAINTENANCE)
+    priority = models.CharField(max_length=20, choices=CareTicketPriority.choices, default=CareTicketPriority.MEDIUM)
+    status = models.CharField(max_length=30, choices=CareTicketStatus.choices, default=CareTicketStatus.OPEN)
+    title = models.CharField(max_length=180)
+    description = models.TextField()
+    student_safe_summary = models.CharField(max_length=240, blank=True)
+    landlord_visible = models.BooleanField(default=True)
+    internal_notes = models.TextField(blank=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    closed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(default=timezone.now)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["user", "status"]),
+            models.Index(fields=["property", "status"]),
+            models.Index(fields=["tenancy", "status"]),
+            models.Index(fields=["assigned_to", "status"]),
+            models.Index(fields=["category", "priority"]),
+            models.Index(fields=["created_at"]),
+        ]
+
+
+class CareTicketEvent(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    ticket = models.ForeignKey(CareTicket, on_delete=models.CASCADE, related_name="events")
+    event_type = models.CharField(max_length=30, choices=CareTicketEventType.choices, default=CareTicketEventType.CREATED)
+    from_status = models.CharField(max_length=30, blank=True)
+    to_status = models.CharField(max_length=30, blank=True)
+    actor = models.ForeignKey("accounts.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="care_ticket_events")
+    student_message = models.CharField(max_length=240)
+    landlord_message = models.CharField(max_length=240, blank=True)
+    admin_message = models.CharField(max_length=360, blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        ordering = ["created_at"]
+        indexes = [
+            models.Index(fields=["ticket", "created_at"]),
+            models.Index(fields=["event_type"]),
+            models.Index(fields=["to_status"]),
+        ]
+
+
+class CareTicketAttachment(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    ticket = models.ForeignKey(CareTicket, on_delete=models.CASCADE, related_name="attachments")
+    uploaded_by = models.ForeignKey("accounts.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="care_ticket_attachments")
+    file = models.FileField(upload_to=private_care_attachment_path)
+    original_filename = models.CharField(max_length=255)
+    content_type = models.CharField(max_length=120, blank=True)
+    file_size = models.PositiveIntegerField(default=0)
+    landlord_visible = models.BooleanField(default=True)
+    uploaded_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["ticket"]),
+            models.Index(fields=["uploaded_by"]),
+            models.Index(fields=["uploaded_at"]),
+        ]
+
+
+class SupportRequestCategory(models.TextChoices):
+    NHS_GUIDANCE = "NHS_GUIDANCE", "NHS Guidance"
+    BANKING_GUIDANCE = "BANKING_GUIDANCE", "Banking Guidance"
+    ATS_CV_SUPPORT = "ATS_CV_SUPPORT", "ATS/CV Support"
+    AIRPORT_PICKUP = "AIRPORT_PICKUP", "Airport Pickup"
+    SETTLEMENT_SUPPORT = "SETTLEMENT_SUPPORT", "Settlement Support"
+    UNIVERSITY_COMMUNITY = "UNIVERSITY_COMMUNITY", "University/Community Guidance"
+    GENERAL_SUPPORT = "GENERAL_SUPPORT", "General Support"
+
+
+class SupportRequestStatus(models.TextChoices):
+    OPEN = "OPEN", "Open"
+    TRIAGED = "TRIAGED", "Triaged"
+    ASSIGNED = "ASSIGNED", "Assigned"
+    WAITING_STUDENT = "WAITING_STUDENT", "Waiting Student"
+    WAITING_PARTNER = "WAITING_PARTNER", "Waiting Partner"
+    RESOLVED = "RESOLVED", "Resolved"
+    CLOSED = "CLOSED", "Closed"
+
+
+class SupportRequestPriority(models.TextChoices):
+    LOW = "LOW", "Low"
+    MEDIUM = "MEDIUM", "Medium"
+    HIGH = "HIGH", "High"
+    URGENT = "URGENT", "Urgent"
+
+
+class SupportRequestEventType(models.TextChoices):
+    CREATED = "CREATED", "Created"
+    STATUS_CHANGED = "STATUS_CHANGED", "Status Changed"
+    ASSIGNED = "ASSIGNED", "Assigned"
+    STUDENT_UPDATED = "STUDENT_UPDATED", "Student Updated"
+    PARTNER_UPDATED = "PARTNER_UPDATED", "Partner Updated"
+    RESOLVED = "RESOLVED", "Resolved"
+    CLOSED = "CLOSED", "Closed"
+
+
+class SupportRequest(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey("accounts.User", on_delete=models.CASCADE, related_name="support_requests")
+    application = models.ForeignKey(HousingApplication, null=True, blank=True, on_delete=models.SET_NULL, related_name="support_requests")
+    assigned_to = models.ForeignKey(
+        "accounts.User",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="assigned_support_requests",
+    )
+    category = models.CharField(max_length=40, choices=SupportRequestCategory.choices, default=SupportRequestCategory.GENERAL_SUPPORT)
+    priority = models.CharField(max_length=20, choices=SupportRequestPriority.choices, default=SupportRequestPriority.MEDIUM)
+    status = models.CharField(max_length=30, choices=SupportRequestStatus.choices, default=SupportRequestStatus.OPEN)
+    title = models.CharField(max_length=180)
+    description = models.TextField()
+    student_safe_summary = models.CharField(max_length=240, blank=True)
+    partner_visible = models.BooleanField(default=False)
+    internal_notes = models.TextField(blank=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    closed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(default=timezone.now)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["user", "status"]),
+            models.Index(fields=["application", "status"]),
+            models.Index(fields=["assigned_to", "status"]),
+            models.Index(fields=["category", "priority"]),
+            models.Index(fields=["created_at"]),
+        ]
+
+    def __str__(self):
+        return f"{self.title} - {self.user.email}"
+
+
+class SupportRequestEvent(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    support_request = models.ForeignKey(SupportRequest, on_delete=models.CASCADE, related_name="events")
+    event_type = models.CharField(max_length=30, choices=SupportRequestEventType.choices, default=SupportRequestEventType.CREATED)
+    from_status = models.CharField(max_length=30, blank=True)
+    to_status = models.CharField(max_length=30, blank=True)
+    actor = models.ForeignKey("accounts.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="support_request_events")
+    student_message = models.CharField(max_length=240)
+    admin_message = models.CharField(max_length=360, blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        ordering = ["created_at"]
+        indexes = [
+            models.Index(fields=["support_request", "created_at"]),
+            models.Index(fields=["event_type"]),
+            models.Index(fields=["to_status"]),
+        ]
+
+
+class SupportRequestAttachment(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    support_request = models.ForeignKey(SupportRequest, on_delete=models.CASCADE, related_name="attachments")
+    uploaded_by = models.ForeignKey("accounts.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="support_request_attachments")
+    file = models.FileField(upload_to=private_support_attachment_path)
+    original_filename = models.CharField(max_length=255)
+    content_type = models.CharField(max_length=120, blank=True)
+    file_size = models.PositiveIntegerField(default=0)
+    partner_visible = models.BooleanField(default=False)
+    uploaded_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["support_request"]),
+            models.Index(fields=["uploaded_by"]),
+            models.Index(fields=["uploaded_at"]),
+        ]
+
+
+class AssistReminderType(models.TextChoices):
+    DOCUMENT_EXPIRY = "DOCUMENT_EXPIRY", "Document Expiry"
+    MOVE_IN = "MOVE_IN", "Move-in"
+    RENT_DUE = "RENT_DUE", "Rent Due"
+    CARE_FOLLOW_UP = "CARE_FOLLOW_UP", "Care Follow-up"
+    SUPPORT_FOLLOW_UP = "SUPPORT_FOLLOW_UP", "Support Follow-up"
+    RENEWAL = "RENEWAL", "Renewal"
+    GENERAL = "GENERAL", "General"
+
+
+class AssistReminderStatus(models.TextChoices):
+    SCHEDULED = "SCHEDULED", "Scheduled"
+    SENT = "SENT", "Sent"
+    COMPLETED = "COMPLETED", "Completed"
+    DISMISSED = "DISMISSED", "Dismissed"
+    CANCELLED = "CANCELLED", "Cancelled"
+
+
+class AssistReminderPriority(models.TextChoices):
+    LOW = "LOW", "Low"
+    MEDIUM = "MEDIUM", "Medium"
+    HIGH = "HIGH", "High"
+
+
+class AssistAutomationAction(models.TextChoices):
+    CREATED = "CREATED", "Created"
+    DUE_PROCESSED = "DUE_PROCESSED", "Due Processed"
+    NOTIFICATION_SENT = "NOTIFICATION_SENT", "Notification Sent"
+    COMPLETED = "COMPLETED", "Completed"
+    DISMISSED = "DISMISSED", "Dismissed"
+    CANCELLED = "CANCELLED", "Cancelled"
+
+
+class AssistReminder(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey("accounts.User", on_delete=models.CASCADE, related_name="assist_reminders")
+    application = models.ForeignKey(HousingApplication, null=True, blank=True, on_delete=models.SET_NULL, related_name="assist_reminders")
+    tenancy = models.ForeignKey(Tenancy, null=True, blank=True, on_delete=models.SET_NULL, related_name="assist_reminders")
+    care_ticket = models.ForeignKey(CareTicket, null=True, blank=True, on_delete=models.SET_NULL, related_name="assist_reminders")
+    support_request = models.ForeignKey(SupportRequest, null=True, blank=True, on_delete=models.SET_NULL, related_name="assist_reminders")
+    created_by = models.ForeignKey(
+        "accounts.User",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="created_assist_reminders",
+    )
+    assigned_to = models.ForeignKey(
+        "accounts.User",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="assigned_assist_reminders",
+    )
+    reminder_type = models.CharField(max_length=30, choices=AssistReminderType.choices, default=AssistReminderType.GENERAL)
+    priority = models.CharField(max_length=20, choices=AssistReminderPriority.choices, default=AssistReminderPriority.MEDIUM)
+    status = models.CharField(max_length=20, choices=AssistReminderStatus.choices, default=AssistReminderStatus.SCHEDULED)
+    title = models.CharField(max_length=180)
+    student_message = models.CharField(max_length=240)
+    internal_notes = models.TextField(blank=True)
+    due_at = models.DateTimeField()
+    sent_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(default=timezone.now)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["user", "status"]),
+            models.Index(fields=["application", "status"]),
+            models.Index(fields=["tenancy", "status"]),
+            models.Index(fields=["assigned_to", "status"]),
+            models.Index(fields=["reminder_type", "priority"]),
+            models.Index(fields=["due_at", "status"]),
+        ]
+
+    def __str__(self):
+        return f"{self.title} - {self.user.email}"
+
+
+class AssistAutomationLog(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    reminder = models.ForeignKey(AssistReminder, on_delete=models.CASCADE, related_name="automation_logs")
+    action = models.CharField(max_length=30, choices=AssistAutomationAction.choices)
+    actor = models.ForeignKey("accounts.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="assist_automation_logs")
+    message = models.CharField(max_length=360)
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        ordering = ["created_at"]
+        indexes = [
+            models.Index(fields=["reminder", "created_at"]),
+            models.Index(fields=["action"]),
+        ]
+
+
 class StudentDocumentType(models.TextChoices):
     VISA = "VISA", "Visa"
     PROOF_OF_FUNDS = "PROOF_OF_FUNDS", "Proof of Funds"
     UNIVERSITY_CERTIFICATE = "UNIVERSITY_CERTIFICATE", "University Certificate"
     IDENTITY = "IDENTITY", "Identity"
+    PASSPORT = "PASSPORT", "Passport"
+    RIGHT_TO_RENT = "RIGHT_TO_RENT", "Right to Rent"
+    GUARANTOR_OR_SPONSOR = "GUARANTOR_OR_SPONSOR", "Guarantor or Sponsor Letter"
+    ADDRESS_HISTORY = "ADDRESS_HISTORY", "Address History"
+    EMERGENCY_CONTACT = "EMERGENCY_CONTACT", "Emergency Contact"
     OTHER = "OTHER", "Other"
 
 
@@ -582,17 +1053,36 @@ class VerificationState(models.TextChoices):
     PENDING = "PENDING", "Pending"
     APPROVED = "APPROVED", "Approved"
     REJECTED = "REJECTED", "Rejected"
+    RESUBMISSION_REQUIRED = "RESUBMISSION_REQUIRED", "Resubmission Required"
+    EXPIRED = "EXPIRED", "Expired"
+
+
+class DocumentRequirementStage(models.TextChoices):
+    ENTRY = "ENTRY", "Entry"
+    VERIFICATION = "VERIFICATION", "Verification"
+    MOVE_IN = "MOVE_IN", "Move-in"
 
 
 class StudentDocument(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.ForeignKey("accounts.User", on_delete=models.CASCADE, related_name="student_documents")
+    application = models.ForeignKey(
+        HousingApplication,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="student_documents",
+    )
     document_type = models.CharField(max_length=40, choices=StudentDocumentType.choices, default=StudentDocumentType.OTHER)
+    requirement_stage = models.CharField(max_length=30, choices=DocumentRequirementStage.choices, default=DocumentRequirementStage.VERIFICATION)
     file = models.FileField(upload_to=private_document_path)
     original_filename = models.CharField(max_length=255)
     content_type = models.CharField(max_length=120, blank=True)
     file_size = models.PositiveIntegerField(default=0)
-    verification_status = models.CharField(max_length=20, choices=VerificationState.choices, default=VerificationState.PENDING)
+    verification_status = models.CharField(max_length=30, choices=VerificationState.choices, default=VerificationState.PENDING)
+    expiry_date = models.DateField(null=True, blank=True)
+    resubmission_requested_at = models.DateTimeField(null=True, blank=True)
+    student_message = models.CharField(max_length=240, blank=True)
     admin_notes = models.TextField(blank=True)
     reviewed_by = models.ForeignKey(
         "accounts.User",
@@ -607,7 +1097,10 @@ class StudentDocument(models.Model):
     class Meta:
         indexes = [
             models.Index(fields=["user", "document_type"]),
+            models.Index(fields=["application", "document_type"]),
+            models.Index(fields=["requirement_stage"]),
             models.Index(fields=["verification_status"]),
+            models.Index(fields=["expiry_date"]),
             models.Index(fields=["uploaded_at"]),
         ]
 

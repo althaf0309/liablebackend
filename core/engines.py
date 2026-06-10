@@ -1,9 +1,11 @@
 from django.utils import timezone
+import uuid
 
 from .models import (
     ISRAscore,
     IntentForm,
     PropMatchResult,
+    PropMatchScoreHistory,
     Property,
     PropertyStatus,
     RiskBand,
@@ -11,6 +13,8 @@ from .models import (
     TenancyStatus,
 )
 from .tenancy_intelligence import refresh_tenancy_health_score
+
+MATCH_POLICY_VERSION = "QM-Y1-2"
 
 
 def clamp_score(value):
@@ -110,6 +114,7 @@ def run_propmatch_for_user(user, limit=3):
     qs = Property.objects.filter(status=PropertyStatus.APPROVED).prefetch_related("images")
 
     generated = []
+    run_id = uuid.uuid4()
     for prop in qs:
         active_occupancy = Tenancy.objects.filter(property=prop, status=TenancyStatus.ACTIVE).exists()
         budget_pass = intent.budget_max >= int(prop.rent_monthly)
@@ -137,18 +142,33 @@ def run_propmatch_for_user(user, limit=3):
         )
         university_distance_signal = 15 if locality_match else 10 if city_match else 2
         rent_gap = max(0, intent.budget_max - int(prop.rent_monthly))
+        score_breakdown = {
+            "isra": round(score.total_score * 0.45),
+            "location": university_distance_signal + (12 if locality_match else 0),
+            "room_preference": 8 if room_preference_match else 0,
+            "budget_headroom": round(min(18, rent_gap / 25)),
+            "availability": 10 if availability_pass else 0,
+        }
         confidence = min(
             99,
-            round(
-                score.total_score * 0.45
-                + university_distance_signal
-                + (12 if locality_match else 0)
-                + (8 if room_preference_match else 0)
-                + min(18, rent_gap / 25)
-                + (10 if availability_pass else 0)
-            ),
+            round(sum(score_breakdown.values())),
         )
         eligible = budget_pass and isra_pass and availability_pass and occupancy_pass
+        hard_fail_reasons = []
+        if not budget_pass:
+            hard_fail_reasons.append("BUDGET_ABOVE_STUDENT_RANGE")
+        if not isra_pass:
+            hard_fail_reasons.append("ISRA_BELOW_PROPERTY_THRESHOLD")
+        if not availability_pass:
+            hard_fail_reasons.append("OUTSIDE_MOVE_IN_WINDOW")
+        if not occupancy_pass:
+            hard_fail_reasons.append("PROPERTY_CURRENTLY_OCCUPIED")
+        student_rationale = [
+            "Within stated budget" if budget_pass else "Rent is above your stated budget",
+            "Meets property readiness threshold" if isra_pass else "More verification may be needed before this property",
+            "Available near your move-in window" if availability_pass else "Availability may not fit your move-in date",
+            "Location preference signal found" if city_match or locality_match else "Location is less aligned with your preferences",
+        ]
         generated.append(
             {
                 "property": prop,
@@ -158,6 +178,10 @@ def run_propmatch_for_user(user, limit=3):
                 "occupancy_pass": occupancy_pass,
                 "eligible": eligible,
                 "confidence_score": confidence,
+                "rule_version": MATCH_POLICY_VERSION,
+                "score_breakdown": score_breakdown,
+                "hard_fail_reasons": hard_fail_reasons,
+                "student_rationale": student_rationale,
                 "rationale": {
                     "budget": f"Budget GBP {intent.budget_max} vs rent GBP {prop.rent_monthly}",
                     "isra": f"ISRA {score.total_score} vs threshold {prop.isra_threshold}",
@@ -174,6 +198,31 @@ def run_propmatch_for_user(user, limit=3):
         key=lambda item: item["confidence_score"],
         reverse=True,
     )[:limit]
+    ranked_by_property_id = {item["property"].id: index for index, item in enumerate(ranked, start=1)}
+
+    history_rows = []
+    for item in generated:
+        prop = item["property"]
+        history_rows.append(
+            PropMatchScoreHistory(
+                run_id=run_id,
+                user=user,
+                property=prop,
+                rule_version=item["rule_version"],
+                rank=ranked_by_property_id.get(prop.id),
+                confidence_score=item["confidence_score"],
+                eligible=item["eligible"],
+                budget_pass=item["budget_pass"],
+                availability_pass=item["availability_pass"],
+                isra_pass=item["isra_pass"],
+                occupancy_pass=item["occupancy_pass"],
+                score_breakdown=item["score_breakdown"],
+                hard_fail_reasons=item["hard_fail_reasons"],
+                admin_rationale=item["rationale"],
+                student_rationale=item["student_rationale"],
+            )
+        )
+    PropMatchScoreHistory.objects.bulk_create(history_rows)
 
     PropMatchResult.objects.filter(user=user).delete()
     results = []
@@ -189,6 +238,10 @@ def run_propmatch_for_user(user, limit=3):
                 isra_pass=item["isra_pass"],
                 eligible=item["eligible"],
                 rationale=item["rationale"],
+                rule_version=item["rule_version"],
+                score_breakdown=item["score_breakdown"],
+                hard_fail_reasons=item["hard_fail_reasons"],
+                student_rationale=item["student_rationale"],
             )
         )
     return results

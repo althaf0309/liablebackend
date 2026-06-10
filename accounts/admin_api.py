@@ -1,3 +1,5 @@
+import logging
+
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
@@ -18,6 +20,8 @@ from .serializers import (
     StudentProfileSerializer,
     UserSerializer,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class AdminUserWriteSerializer(serializers.ModelSerializer):
@@ -135,6 +139,7 @@ class AdminUserWriteSerializer(serializers.ModelSerializer):
 
         role = validated_data.get("role", instance.role)
         is_active = validated_data.pop("is_active", instance.is_active)
+        previous_status = instance.verification_status
         verification_status = validated_data.pop(
             "verification_status",
             instance.verification_status,
@@ -145,11 +150,34 @@ class AdminUserWriteSerializer(serializers.ModelSerializer):
 
         self._apply_role_flags(instance, role, verification_status, is_active)
 
-        if password:
+        # If admin is approving for the first time and no password supplied,
+        # generate a temporary password and email login credentials.
+        being_approved = (
+            previous_status != VerificationStatus.APPROVED
+            and verification_status == VerificationStatus.APPROVED
+        )
+        temp_password = None
+        if being_approved and not password and not instance.has_usable_password():
+            temp_password = User.generate_temp_password()
+            instance.set_password(temp_password)
+        elif password:
             instance.set_password(password)
 
         instance.save()
         self._sync_profiles(instance, role, landlord_data, student_data)
+
+        if being_approved:
+            try:
+                from .email_utils import email_account_approved
+                email_account_approved(
+                    to_email=instance.email,
+                    name=instance.full_name or instance.email,
+                    login_email=instance.email,
+                    temp_password=temp_password or "(password already set by admin)",
+                )
+            except Exception:
+                logger.exception("Approval email failed for %s", instance.email)
+
         return instance
 
     def to_representation(self, instance):

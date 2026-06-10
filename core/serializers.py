@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from .models import *
+from .document_verification import document_status_message, verification_summary_for_user
 from .quantum_flow import flow_progress_index, flow_stage_label
 
 
@@ -171,7 +172,25 @@ class PropMatchResultSerializer(serializers.ModelSerializer):
             "id", "user", "user_email", "user_name",
             "property", "rank", "confidence_score",
             "budget_pass", "availability_pass", "isra_pass", "eligible",
-            "rationale", "generated_at",
+            "rationale", "rule_version", "score_breakdown", "hard_fail_reasons", "student_rationale",
+            "generated_at",
+        ]
+        read_only_fields = fields
+
+
+class PropMatchScoreHistorySerializer(serializers.ModelSerializer):
+    property = PublicPropertyListSerializer(read_only=True)
+    user_email = serializers.EmailField(source="user.email", read_only=True)
+    user_name = serializers.CharField(source="user.full_name", read_only=True)
+
+    class Meta:
+        model = PropMatchScoreHistory
+        fields = [
+            "id", "run_id", "user", "user_email", "user_name", "property",
+            "rule_version", "rank", "confidence_score", "eligible",
+            "budget_pass", "availability_pass", "isra_pass", "occupancy_pass",
+            "score_breakdown", "hard_fail_reasons", "admin_rationale", "student_rationale",
+            "generated_at",
         ]
         read_only_fields = fields
 
@@ -181,28 +200,99 @@ class HousingApplicationSerializer(serializers.ModelSerializer):
     user_name = serializers.CharField(source="user.full_name", read_only=True)
     property_title = serializers.CharField(source="property.title", read_only=True)
     stage_label = serializers.SerializerMethodField()
+    entry_status_label = serializers.CharField(source="get_entry_status_display", read_only=True)
+    intake_source_label = serializers.CharField(source="get_intake_source_display", read_only=True)
+    intake_completeness = serializers.SerializerMethodField()
     progress_index = serializers.SerializerMethodField()
+    verification_summary = serializers.SerializerMethodField()
 
     class Meta:
         model = HousingApplication
         fields = [
-            "id", "user", "user_email", "user_name",
+            "id", "application_code", "user", "user_email", "user_name",
             "property", "property_title", "prop_match",
+            "entry_status", "entry_status_label", "intake_source", "intake_source_label",
+            "applicant_notes", "admin_entry_notes", "intake_snapshot", "intake_completeness",
+            "submitted_at", "entry_reviewed_at", "verification_summary",
             "stage", "stage_label", "status", "progress_index",
             "stage_notes", "next_action", "target_move_in_date",
             "stage_history", "created_at", "updated_at",
         ]
         read_only_fields = [
-            "id", "user_email", "user_name", "property_title",
-            "stage_label", "progress_index", "stage_history",
+            "id", "application_code", "user_email", "user_name", "property_title",
+            "stage_label", "entry_status_label", "intake_source_label", "intake_completeness",
+            "submitted_at", "entry_reviewed_at", "verification_summary", "progress_index", "stage_history",
             "created_at", "updated_at",
         ]
+
+    def get_intake_completeness(self, obj):
+        snapshot = obj.intake_snapshot or {}
+        expected = [
+            "identity",
+            "purpose",
+            "city",
+            "budget_max",
+            "move_in_date",
+            "university",
+            "nationality",
+        ]
+        completed = sum(1 for key in expected if snapshot.get(key) not in [None, "", []])
+        return {
+            "completed": completed,
+            "total": len(expected),
+            "percent": round((completed / len(expected)) * 100),
+            "missing": [key for key in expected if snapshot.get(key) in [None, "", []]],
+        }
 
     def get_stage_label(self, obj):
         return flow_stage_label(obj.stage)
 
     def get_progress_index(self, obj):
         return flow_progress_index(obj.stage)
+
+    def get_verification_summary(self, obj):
+        return verification_summary_for_user(obj.user, application=obj)
+
+
+class ApplicationTimelineEventSerializer(serializers.ModelSerializer):
+    actor_email = serializers.EmailField(source="actor.email", read_only=True)
+
+    class Meta:
+        model = ApplicationTimelineEvent
+        fields = [
+            "id", "application", "event_type", "from_stage", "to_stage",
+            "actor", "actor_email", "student_message", "admin_message",
+            "metadata", "created_at",
+        ]
+        read_only_fields = fields
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        is_admin_view = bool(
+            user
+            and getattr(user, "is_authenticated", False)
+            and (getattr(user, "is_superuser", False) or getattr(user, "is_staff", False) or getattr(user, "role", "") in ["ADMIN", "STAFF"])
+        )
+        if not is_admin_view:
+            data.pop("admin_message", None)
+            data.pop("metadata", None)
+            data.pop("actor", None)
+            data.pop("actor_email", None)
+        return data
+
+
+class NotificationSerializer(serializers.ModelSerializer):
+    application_code = serializers.CharField(source="application.application_code", read_only=True)
+
+    class Meta:
+        model = Notification
+        fields = [
+            "id", "application", "application_code", "timeline_event",
+            "audience", "title", "message", "read_at", "created_at",
+        ]
+        read_only_fields = fields
 
 
 class TenancySerializer(serializers.ModelSerializer):
@@ -372,14 +462,16 @@ class StudentDocumentSerializer(serializers.ModelSerializer):
     class Meta:
         model = StudentDocument
         fields = [
-            "id", "user", "user_email", "user_name", "document_type", "original_filename", "content_type",
-            "file_size", "verification_status", "admin_notes",
+            "id", "user", "user_email", "user_name", "application", "document_type", "requirement_stage",
+            "original_filename", "content_type",
+            "file_size", "verification_status", "expiry_date", "resubmission_requested_at",
+            "student_message", "admin_notes",
             "reviewed_by", "reviewed_by_email", "student_review_message",
             "uploaded_at", "reviewed_at", "download_url",
         ]
         read_only_fields = [
             "id", "user", "original_filename", "content_type", "file_size",
-            "reviewed_by", "reviewed_by_email", "student_review_message",
+            "resubmission_requested_at", "reviewed_by", "reviewed_by_email", "student_review_message",
             "uploaded_at", "reviewed_at", "download_url",
         ]
 
@@ -387,11 +479,7 @@ class StudentDocumentSerializer(serializers.ModelSerializer):
         return f"/api/core/documents/{obj.id}/download/"
 
     def get_student_review_message(self, obj):
-        if obj.verification_status == VerificationState.APPROVED:
-            return "Document verified by LGS operations."
-        if obj.verification_status == VerificationState.REJECTED:
-            return "Document needs review. Please contact LGS support or upload an updated file."
-        return "Document received and waiting for LGS verification."
+        return document_status_message(obj)
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
@@ -422,6 +510,232 @@ class ComplaintAttachmentSerializer(serializers.ModelSerializer):
 
     def get_download_url(self, obj):
         return f"/api/core/complaint-attachments/{obj.id}/download/"
+
+
+class CareTicketEventSerializer(serializers.ModelSerializer):
+    actor_email = serializers.EmailField(source="actor.email", read_only=True)
+
+    class Meta:
+        model = CareTicketEvent
+        fields = [
+            "id", "ticket", "event_type", "from_status", "to_status",
+            "actor", "actor_email", "student_message", "landlord_message",
+            "admin_message", "metadata", "created_at",
+        ]
+        read_only_fields = fields
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        role = getattr(user, "role", "")
+        is_admin_view = bool(user and getattr(user, "is_authenticated", False) and role in ["ADMIN", "STAFF"])
+        is_landlord_view = bool(user and getattr(user, "is_authenticated", False) and role == "LANDLORD")
+        if not is_admin_view:
+            data.pop("admin_message", None)
+            data.pop("metadata", None)
+            data.pop("actor", None)
+            data.pop("actor_email", None)
+        if not is_admin_view and not is_landlord_view:
+            data.pop("landlord_message", None)
+        return data
+
+
+class CareTicketAttachmentSerializer(serializers.ModelSerializer):
+    download_url = serializers.SerializerMethodField()
+    uploaded_by_email = serializers.EmailField(source="uploaded_by.email", read_only=True)
+
+    class Meta:
+        model = CareTicketAttachment
+        fields = [
+            "id", "ticket", "uploaded_by", "uploaded_by_email", "original_filename",
+            "content_type", "file_size", "landlord_visible", "uploaded_at", "download_url",
+        ]
+        read_only_fields = fields
+
+    def get_download_url(self, obj):
+        return f"/api/core/care-attachments/{obj.id}/download/"
+
+
+class CareTicketSerializer(serializers.ModelSerializer):
+    property_title = serializers.CharField(source="property.title", read_only=True)
+    user_email = serializers.EmailField(source="user.email", read_only=True)
+    assigned_to_email = serializers.EmailField(source="assigned_to.email", read_only=True)
+    status_label = serializers.CharField(source="get_status_display", read_only=True)
+    category_label = serializers.CharField(source="get_category_display", read_only=True)
+    priority_label = serializers.CharField(source="get_priority_display", read_only=True)
+    events = CareTicketEventSerializer(many=True, read_only=True)
+    attachments = CareTicketAttachmentSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = CareTicket
+        fields = [
+            "id", "user", "user_email", "property", "property_title", "tenancy", "application",
+            "assigned_to", "assigned_to_email", "category", "category_label",
+            "priority", "priority_label", "status", "status_label",
+            "title", "description", "student_safe_summary", "landlord_visible",
+            "internal_notes", "resolved_at", "closed_at",
+            "events", "attachments", "created_at", "updated_at",
+        ]
+        read_only_fields = [
+            "id", "user", "user_email", "property_title", "assigned_to_email",
+            "status_label", "category_label", "priority_label",
+            "resolved_at", "closed_at", "events", "attachments", "created_at", "updated_at",
+        ]
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        role = getattr(user, "role", "")
+        is_admin_view = bool(user and getattr(user, "is_authenticated", False) and role in ["ADMIN", "STAFF"])
+        if not is_admin_view:
+            data.pop("internal_notes", None)
+            data.pop("assigned_to", None)
+            data.pop("assigned_to_email", None)
+        return data
+
+
+class SupportRequestEventSerializer(serializers.ModelSerializer):
+    actor_email = serializers.EmailField(source="actor.email", read_only=True)
+
+    class Meta:
+        model = SupportRequestEvent
+        fields = [
+            "id", "support_request", "event_type", "from_status", "to_status",
+            "actor", "actor_email", "student_message", "admin_message",
+            "metadata", "created_at",
+        ]
+        read_only_fields = fields
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        role = getattr(user, "role", "")
+        is_admin_view = bool(user and getattr(user, "is_authenticated", False) and role in ["ADMIN", "STAFF"])
+        if not is_admin_view:
+            data.pop("admin_message", None)
+            data.pop("metadata", None)
+            data.pop("actor", None)
+            data.pop("actor_email", None)
+        return data
+
+
+class SupportRequestAttachmentSerializer(serializers.ModelSerializer):
+    download_url = serializers.SerializerMethodField()
+    uploaded_by_email = serializers.EmailField(source="uploaded_by.email", read_only=True)
+
+    class Meta:
+        model = SupportRequestAttachment
+        fields = [
+            "id", "support_request", "uploaded_by", "uploaded_by_email", "original_filename",
+            "content_type", "file_size", "partner_visible", "uploaded_at", "download_url",
+        ]
+        read_only_fields = fields
+
+    def get_download_url(self, obj):
+        return f"/api/core/support-attachments/{obj.id}/download/"
+
+
+class SupportRequestSerializer(serializers.ModelSerializer):
+    user_email = serializers.EmailField(source="user.email", read_only=True)
+    assigned_to_email = serializers.EmailField(source="assigned_to.email", read_only=True)
+    application_code = serializers.CharField(source="application.application_code", read_only=True)
+    status_label = serializers.CharField(source="get_status_display", read_only=True)
+    category_label = serializers.CharField(source="get_category_display", read_only=True)
+    priority_label = serializers.CharField(source="get_priority_display", read_only=True)
+    events = SupportRequestEventSerializer(many=True, read_only=True)
+    attachments = SupportRequestAttachmentSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = SupportRequest
+        fields = [
+            "id", "user", "user_email", "application", "application_code",
+            "assigned_to", "assigned_to_email", "category", "category_label",
+            "priority", "priority_label", "status", "status_label",
+            "title", "description", "student_safe_summary", "partner_visible",
+            "internal_notes", "resolved_at", "closed_at",
+            "events", "attachments", "created_at", "updated_at",
+        ]
+        read_only_fields = [
+            "id", "user", "user_email", "application_code", "assigned_to_email",
+            "status_label", "category_label", "priority_label",
+            "resolved_at", "closed_at", "events", "attachments", "created_at", "updated_at",
+        ]
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        role = getattr(user, "role", "")
+        is_admin_view = bool(user and getattr(user, "is_authenticated", False) and role in ["ADMIN", "STAFF"])
+        if not is_admin_view:
+            data.pop("internal_notes", None)
+            data.pop("assigned_to", None)
+            data.pop("assigned_to_email", None)
+        return data
+
+
+class AssistAutomationLogSerializer(serializers.ModelSerializer):
+    actor_email = serializers.EmailField(source="actor.email", read_only=True)
+
+    class Meta:
+        model = AssistAutomationLog
+        fields = ["id", "reminder", "action", "actor", "actor_email", "message", "metadata", "created_at"]
+        read_only_fields = fields
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        role = getattr(user, "role", "")
+        is_admin_view = bool(user and getattr(user, "is_authenticated", False) and role in ["ADMIN", "STAFF"])
+        if not is_admin_view:
+            data.pop("actor", None)
+            data.pop("actor_email", None)
+            data.pop("metadata", None)
+        return data
+
+
+class AssistReminderSerializer(serializers.ModelSerializer):
+    user_email = serializers.EmailField(source="user.email", read_only=True)
+    assigned_to_email = serializers.EmailField(source="assigned_to.email", read_only=True)
+    application_code = serializers.CharField(source="application.application_code", read_only=True)
+    reminder_type_label = serializers.CharField(source="get_reminder_type_display", read_only=True)
+    status_label = serializers.CharField(source="get_status_display", read_only=True)
+    priority_label = serializers.CharField(source="get_priority_display", read_only=True)
+    automation_logs = AssistAutomationLogSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = AssistReminder
+        fields = [
+            "id", "user", "user_email", "application", "application_code", "tenancy",
+            "care_ticket", "support_request", "created_by", "assigned_to", "assigned_to_email",
+            "reminder_type", "reminder_type_label", "priority", "priority_label",
+            "status", "status_label", "title", "student_message", "internal_notes",
+            "due_at", "sent_at", "completed_at", "metadata", "automation_logs",
+            "created_at", "updated_at",
+        ]
+        read_only_fields = [
+            "id", "user_email", "application_code", "assigned_to_email",
+            "reminder_type_label", "priority_label", "status_label",
+            "sent_at", "completed_at", "automation_logs", "created_at", "updated_at",
+        ]
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        role = getattr(user, "role", "")
+        is_admin_view = bool(user and getattr(user, "is_authenticated", False) and role in ["ADMIN", "STAFF"])
+        if not is_admin_view:
+            data.pop("internal_notes", None)
+            data.pop("metadata", None)
+            data.pop("created_by", None)
+            data.pop("assigned_to", None)
+            data.pop("assigned_to_email", None)
+        return data
 
 
 class PropertyExpenseSerializer(serializers.ModelSerializer):

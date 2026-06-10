@@ -115,9 +115,16 @@ class ISRAscoreAdmin(admin.ModelAdmin):
 
 @admin.register(PropMatchResult)
 class PropMatchResultAdmin(admin.ModelAdmin):
-    list_display = ("user", "property", "rank", "confidence_score", "eligible", "generated_at")
-    list_filter = ("eligible", "budget_pass", "isra_pass", "availability_pass")
+    list_display = ("user", "property", "rank", "confidence_score", "eligible", "rule_version", "generated_at")
+    list_filter = ("eligible", "budget_pass", "isra_pass", "availability_pass", "rule_version")
     search_fields = ("user__email", "property__title")
+
+
+@admin.register(PropMatchScoreHistory)
+class PropMatchScoreHistoryAdmin(admin.ModelAdmin):
+    list_display = ("user", "property", "run_id", "rank", "confidence_score", "eligible", "rule_version", "generated_at")
+    list_filter = ("eligible", "budget_pass", "isra_pass", "availability_pass", "occupancy_pass", "rule_version")
+    search_fields = ("user__email", "property__title", "run_id")
 
 
 @admin.register(HousingApplication)
@@ -126,6 +133,20 @@ class HousingApplicationAdmin(admin.ModelAdmin):
     list_filter = ("stage", "status", "target_move_in_date")
     search_fields = ("user__email", "user__full_name", "property__title")
     readonly_fields = ("id", "stage_history", "created_at", "updated_at")
+
+
+@admin.register(ApplicationTimelineEvent)
+class ApplicationTimelineEventAdmin(admin.ModelAdmin):
+    list_display = ("application", "event_type", "from_stage", "to_stage", "actor", "created_at")
+    list_filter = ("event_type", "to_stage", "created_at")
+    search_fields = ("application__application_code", "application__user__email", "student_message", "admin_message")
+
+
+@admin.register(Notification)
+class NotificationAdmin(admin.ModelAdmin):
+    list_display = ("user", "audience", "title", "application", "read_at", "created_at")
+    list_filter = ("audience", "read_at", "created_at")
+    search_fields = ("user__email", "application__application_code", "title", "message")
 
 
 @admin.register(Tenancy)
@@ -162,11 +183,67 @@ class ComplaintAdmin(admin.ModelAdmin):
     search_fields = ("title", "user__email", "property__title")
 
 
+@admin.register(CareTicket)
+class CareTicketAdmin(admin.ModelAdmin):
+    list_display = ("title", "user", "property", "category", "priority", "status", "assigned_to", "updated_at")
+    list_filter = ("category", "priority", "status", "landlord_visible")
+    search_fields = ("title", "user__email", "property__title")
+
+
+@admin.register(CareTicketEvent)
+class CareTicketEventAdmin(admin.ModelAdmin):
+    list_display = ("ticket", "event_type", "from_status", "to_status", "actor", "created_at")
+    list_filter = ("event_type", "to_status", "created_at")
+    search_fields = ("ticket__title", "ticket__user__email", "student_message", "admin_message")
+
+
+@admin.register(CareTicketAttachment)
+class CareTicketAttachmentAdmin(admin.ModelAdmin):
+    list_display = ("ticket", "original_filename", "content_type", "file_size", "landlord_visible", "uploaded_at")
+    list_filter = ("landlord_visible", "uploaded_at")
+    search_fields = ("ticket__title", "ticket__user__email", "original_filename")
+
+
+@admin.register(SupportRequest)
+class SupportRequestAdmin(admin.ModelAdmin):
+    list_display = ("title", "user", "category", "priority", "status", "assigned_to", "updated_at")
+    list_filter = ("category", "priority", "status", "partner_visible")
+    search_fields = ("title", "user__email", "application__application_code")
+
+
+@admin.register(SupportRequestEvent)
+class SupportRequestEventAdmin(admin.ModelAdmin):
+    list_display = ("support_request", "event_type", "from_status", "to_status", "actor", "created_at")
+    list_filter = ("event_type", "to_status", "created_at")
+    search_fields = ("support_request__title", "support_request__user__email", "student_message", "admin_message")
+
+
+@admin.register(SupportRequestAttachment)
+class SupportRequestAttachmentAdmin(admin.ModelAdmin):
+    list_display = ("support_request", "original_filename", "content_type", "file_size", "partner_visible", "uploaded_at")
+    list_filter = ("partner_visible", "uploaded_at")
+    search_fields = ("support_request__title", "support_request__user__email", "original_filename")
+
+
+@admin.register(AssistReminder)
+class AssistReminderAdmin(admin.ModelAdmin):
+    list_display = ("title", "user", "reminder_type", "priority", "status", "due_at", "assigned_to")
+    list_filter = ("reminder_type", "priority", "status", "due_at")
+    search_fields = ("title", "user__email", "application__application_code", "student_message")
+
+
+@admin.register(AssistAutomationLog)
+class AssistAutomationLogAdmin(admin.ModelAdmin):
+    list_display = ("reminder", "action", "actor", "created_at")
+    list_filter = ("action", "created_at")
+    search_fields = ("reminder__title", "reminder__user__email", "message")
+
+
 @admin.register(StudentDocument)
 class StudentDocumentAdmin(admin.ModelAdmin):
-    list_display = ("user", "document_type", "original_filename", "verification_status", "uploaded_at")
-    list_filter = ("document_type", "verification_status")
-    search_fields = ("user__email", "user__full_name", "original_filename")
+    list_display = ("user", "application", "document_type", "requirement_stage", "original_filename", "verification_status", "expiry_date", "uploaded_at")
+    list_filter = ("document_type", "requirement_stage", "verification_status")
+    search_fields = ("user__email", "user__full_name", "application__application_code", "original_filename")
 
 
 @admin.register(ComplaintAttachment)

@@ -1,6 +1,8 @@
 from django.utils import timezone
 
 from .models import (
+    CareTicket,
+    CareTicketStatus,
     Complaint,
     ComplaintStatus,
     RentLedger,
@@ -114,12 +116,35 @@ def sync_tenancy_health_events(tenancy):
                 complaint.resolved_at or complaint.updated_at,
             )
 
+    for ticket in CareTicket.objects.filter(tenancy=tenancy):
+        if ticket.status in [CareTicketStatus.RESOLVED, CareTicketStatus.CLOSED]:
+            _event(
+                tenancy,
+                THSEventType.CARE_TICKET_RESOLVED,
+                4,
+                f"Care request resolved: {ticket.title}",
+                "care_ticket_resolution",
+                ticket.id,
+                ticket.resolved_at or ticket.closed_at or ticket.updated_at,
+            )
+        else:
+            _event(
+                tenancy,
+                THSEventType.CARE_TICKET_OPENED,
+                -6 if ticket.priority in ["HIGH", "URGENT"] else -3,
+                f"Care request open: {ticket.title}",
+                "care_ticket",
+                ticket.id,
+                ticket.created_at,
+            )
+
 
 def refresh_tenancy_health_score(tenancy):
     sync_tenancy_health_events(tenancy)
     events = list(TenancyHealthEvent.objects.filter(tenancy=tenancy).order_by("occurred_at"))
     ledger_rows = list(RentLedger.objects.filter(tenancy=tenancy))
     complaints = list(Complaint.objects.filter(user=tenancy.user, property=tenancy.property))
+    care_tickets = list(CareTicket.objects.filter(tenancy=tenancy))
 
     rent_signal = 70
     for row in ledger_rows:
@@ -138,6 +163,15 @@ def refresh_tenancy_health_score(tenancy):
             complaint_signal -= 8
         else:
             complaint_signal -= 12
+    for ticket in care_tickets:
+        if ticket.status in [CareTicketStatus.RESOLVED, CareTicketStatus.CLOSED]:
+            complaint_signal -= 1
+        elif ticket.status in [CareTicketStatus.WAITING_LANDLORD, CareTicketStatus.WAITING_TENANT]:
+            complaint_signal -= 6
+        elif ticket.priority in ["HIGH", "URGENT"]:
+            complaint_signal -= 12
+        else:
+            complaint_signal -= 7
 
     communication_signal = 75
     if tenancy.extension_requested:
@@ -160,9 +194,12 @@ def refresh_tenancy_health_score(tenancy):
     if any(row.status == RentLedgerStatus.PAID for row in ledger_rows):
         reason_codes.append({"code": "RENT_CONSISTENCY", "label": "Payment consistency supports tenancy stability", "severity": "LOW", "signal": "rent_behaviour"})
     open_complaints = [c for c in complaints if c.status != ComplaintStatus.RESOLVED]
-    if open_complaints:
+    open_care_tickets = [t for t in care_tickets if t.status not in [CareTicketStatus.RESOLVED, CareTicketStatus.CLOSED]]
+    if open_complaints or open_care_tickets:
         reason_codes.append({"code": "SUPPORT_REQUEST_OPEN", "label": "Open support issue should remain visible to operations", "severity": "MEDIUM", "signal": "complaints"})
-    if complaints and not open_complaints:
+    if open_care_tickets:
+        reason_codes.append({"code": "CARE_REQUEST_OPEN", "label": "Open care request should stay visible to operations", "severity": "MEDIUM", "signal": "property_care"})
+    if (complaints or care_tickets) and not open_complaints and not open_care_tickets:
         reason_codes.append({"code": "SUPPORT_REQUEST_RESOLVED", "label": "Support issue resolved through the workflow", "severity": "LOW", "signal": "property_care"})
     if tenancy.extension_requested:
         reason_codes.append({"code": "OCCUPANCY_CONTINUITY_SIGNAL", "label": "Extension request supports occupancy continuity planning", "severity": "LOW", "signal": "occupancy_continuity"})
@@ -200,8 +237,9 @@ def maybe_create_portable_record(tenancy, health=None):
     if tenancy.status != TenancyStatus.ENDED:
         return None
     unresolved = Complaint.objects.filter(user=tenancy.user, property=tenancy.property).exclude(status=ComplaintStatus.RESOLVED).exists()
+    unresolved_care = CareTicket.objects.filter(tenancy=tenancy).exclude(status__in=[CareTicketStatus.RESOLVED, CareTicketStatus.CLOSED]).exists()
     overdue = RentLedger.objects.filter(tenancy=tenancy, status=RentLedgerStatus.OVERDUE).exists()
-    if unresolved or overdue:
+    if unresolved or unresolved_care or overdue:
         return None
     health = health or getattr(tenancy, "health_score", None) or refresh_tenancy_health_score(tenancy)
     code = f"LGS-{str(tenancy.id).split('-')[0].upper()}"
