@@ -1,0 +1,25 @@
+[Unit]
+Description=Liable Celery Worker
+After=network.target redis.service
+Requires=redis.service
+
+[Service]
+Type=forking
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/liablewebsite
+Environment="PATH=/home/ubuntu/liablewebsite/env/bin"
+ExecStart=/home/ubuntu/liablewebsite/env/bin/celery \
+    -A liablewebsite worker \
+    --loglevel=info \
+    --concurrency=2 \
+    --pidfile=/tmp/celery-worker.pid \
+    --logfile=/var/log/liable/celery-worker.log \
+    --detach
+ExecStop=/home/ubuntu/liablewebsite/env/bin/celery multi stop worker \
+    --pidfile=/tmp/celery-worker.pid
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

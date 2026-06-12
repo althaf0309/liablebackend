@@ -6,6 +6,10 @@ from django.utils import timezone
 
 from rest_framework import generics, serializers
 from rest_framework.authentication import SessionAuthentication
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.views import APIView
+from rest_framework import status
 
 from .models import (
     LandlordProfile,
@@ -13,6 +17,8 @@ from .models import (
     User,
     UserRole,
     VerificationStatus,
+    DataErasureRequest,
+    ErasureStatus,
 )
 from .permissions import IsAdminOrStaff
 from .serializers import (
@@ -232,3 +238,116 @@ class AdminUserDetailView(generics.RetrieveUpdateDestroyAPIView):
         if self.request.method in ["PUT", "PATCH"]:
             return AdminUserWriteSerializer
         return UserSerializer
+
+
+# ----------------------------------------
+# ADMIN: ERASURE REQUEST LIST + EXECUTE
+# ----------------------------------------
+class AdminErasureRequestListView(generics.ListAPIView):
+    """Admin views all pending erasure requests."""
+    authentication_classes = [SessionAuthentication]
+    permission_classes = [IsAdminOrStaff]
+    serializer_class = serializers.Serializer  # inline response only
+
+    def list(self, request, *args, **kwargs):
+        qs = DataErasureRequest.objects.order_by("-requested_at").select_related(
+            "user", "reviewed_by"
+        )
+        status_filter = request.query_params.get("status", "").strip().upper()
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+
+        data = [
+            {
+                "id": str(r.id),
+                "user_email": r.user_email_snapshot,
+                "user_id": str(r.user_id) if r.user_id else None,
+                "reason": r.reason,
+                "status": r.status,
+                "requested_at": r.requested_at,
+                "reviewed_by": r.reviewed_by.email if r.reviewed_by else None,
+                "reviewed_at": r.reviewed_at,
+                "executed_at": r.executed_at,
+                "admin_notes": r.admin_notes,
+            }
+            for r in qs
+        ]
+        return Response(data)
+
+
+class AdminErasureExecuteView(APIView):
+    """Admin executes or rejects a data erasure request."""
+    authentication_classes = [SessionAuthentication]
+    permission_classes = [IsAdminOrStaff]
+
+    @transaction.atomic
+    def post(self, request, pk):
+        try:
+            erasure_req = DataErasureRequest.objects.select_for_update().get(pk=pk)
+        except DataErasureRequest.DoesNotExist:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if erasure_req.status in [ErasureStatus.EXECUTED, ErasureStatus.REJECTED]:
+            return Response(
+                {"detail": f"Request already {erasure_req.status.lower()}."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        action = request.data.get("action", "").strip().upper()
+        admin_notes = request.data.get("admin_notes", "").strip()[:500]
+
+        if action == "REJECT":
+            erasure_req.status = ErasureStatus.REJECTED
+            erasure_req.reviewed_by = request.user
+            erasure_req.reviewed_at = timezone.now()
+            erasure_req.admin_notes = admin_notes
+            erasure_req.save(update_fields=["status", "reviewed_by", "reviewed_at", "admin_notes"])
+            return Response({"detail": "Erasure request rejected.", "status": ErasureStatus.REJECTED})
+
+        if action != "EXECUTE":
+            return Response(
+                {"detail": "action must be EXECUTE or REJECT."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Execute: anonymise user record and soft-delete documents
+        target_user = erasure_req.user
+        if target_user:
+            import uuid as _uuid
+            from core.models import StudentDocument
+
+            # Anonymise PII on the user record
+            anon_id = str(_uuid.uuid4())[:8]
+            target_user.email = f"erased-{anon_id}@deleted.invalid"
+            target_user.full_name = "Erased User"
+            target_user.phone = ""
+            target_user.is_active = False
+            target_user.set_unusable_password()
+            target_user.save(update_fields=[
+                "email", "full_name", "phone", "is_active", "password"
+            ])
+
+            # Mark documents as purged (file deletion handled by purge_expired_documents command)
+            StudentDocument.objects.filter(user=target_user).update(
+                purged_at=timezone.now()
+            )
+
+            logger.info(
+                "Data erasure executed for user %s by admin %s",
+                erasure_req.user_email_snapshot,
+                request.user.email,
+            )
+
+        erasure_req.status = ErasureStatus.EXECUTED
+        erasure_req.reviewed_by = request.user
+        erasure_req.reviewed_at = timezone.now()
+        erasure_req.executed_at = timezone.now()
+        erasure_req.admin_notes = admin_notes
+        erasure_req.save(update_fields=[
+            "status", "reviewed_by", "reviewed_at", "executed_at", "admin_notes"
+        ])
+
+        return Response({
+            "detail": "Erasure executed. User anonymised, documents marked for purge.",
+            "status": ErasureStatus.EXECUTED,
+        })

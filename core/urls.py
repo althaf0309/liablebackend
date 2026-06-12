@@ -1,6 +1,38 @@
 from django.urls import path
 from .views import *
 from .admin_api import *
+from .operational_api import (
+    # BookingHold
+    StudentBookingHoldCreateView,
+    AdminBookingHoldListView,
+    AdminBookingHoldActionView,
+    # Contract record
+    TenancyContractRecordView,
+    # WorkflowTask
+    WorkflowTaskListCreateView,
+    WorkflowTaskDetailView,
+    WorkflowTaskCompleteView,
+    # LifecycleRecord
+    AdminLifecycleRecordListView,
+    AdminLifecycleRecordDetailView,
+    AdminLifecycleAdvanceView,
+    MyLifecycleRecordView,
+    # AssistSuggestion
+    AssistSuggestionListCreateView,
+    AssistSuggestionReviewView,
+)
+from .agency_api import (
+    AgencyPartnerListCreateView,
+    AgencyPartnerDetailView,
+    AgencyPartnerActivateView,
+    AgencyReferralListCreateView,
+    AgencyReferralDetailView,
+    ReferralCommissionListView,
+    ReferralCommissionMarkPayableView,
+    ReferralCommissionMarkPaidView,
+    AgencyDashboardView,
+)
+
 urlpatterns = [
     path("properties/public/", PublicPropertyListView.as_view(), name="public-properties"),
     path("health/", HealthCheckView.as_view(), name="health-check"),
@@ -92,4 +124,38 @@ urlpatterns = [
     path("reports/production/", AdminProductionReportView.as_view(), name="admin-production-report"),
     path("monitoring/production/", AdminProductionMonitoringView.as_view(), name="admin-production-monitoring"),
     path("audit-logs/", AdminAuditLogListView.as_view(), name="admin-audit-logs"),
+
+    # Agency Partner System
+    path("agency/dashboard/", AgencyDashboardView.as_view(), name="agency-dashboard"),
+    path("agency/partners/", AgencyPartnerListCreateView.as_view(), name="agency-partner-list"),
+    path("agency/partners/<uuid:id>/", AgencyPartnerDetailView.as_view(), name="agency-partner-detail"),
+    path("agency/partners/<uuid:id>/activate/", AgencyPartnerActivateView.as_view(), name="agency-partner-activate"),
+    path("agency/referrals/", AgencyReferralListCreateView.as_view(), name="agency-referral-list"),
+    path("agency/referrals/<uuid:id>/", AgencyReferralDetailView.as_view(), name="agency-referral-detail"),
+    path("agency/commissions/", ReferralCommissionListView.as_view(), name="agency-commission-list"),
+    path("agency/commissions/<uuid:id>/mark-payable/", ReferralCommissionMarkPayableView.as_view(), name="agency-commission-payable"),
+    path("agency/commissions/<uuid:id>/mark-paid/", ReferralCommissionMarkPaidView.as_view(), name="agency-commission-paid"),
+
+    # Booking Hold
+    path("me/booking-holds/", StudentBookingHoldCreateView.as_view(), name="student-booking-holds"),
+    path("booking-holds/", AdminBookingHoldListView.as_view(), name="admin-booking-holds"),
+    path("booking-holds/<uuid:id>/<str:action>/", AdminBookingHoldActionView.as_view(), name="admin-booking-hold-action"),
+
+    # Tenancy Contract Record
+    path("tenancies/<uuid:tenancy_id>/contract/", TenancyContractRecordView.as_view(), name="tenancy-contract-record"),
+
+    # Workflow Tasks
+    path("workflow-tasks/", WorkflowTaskListCreateView.as_view(), name="workflow-task-list"),
+    path("workflow-tasks/<uuid:id>/", WorkflowTaskDetailView.as_view(), name="workflow-task-detail"),
+    path("workflow-tasks/<uuid:id>/complete/", WorkflowTaskCompleteView.as_view(), name="workflow-task-complete"),
+
+    # Lifecycle Record
+    path("me/lifecycle/", MyLifecycleRecordView.as_view(), name="my-lifecycle"),
+    path("lifecycle/", AdminLifecycleRecordListView.as_view(), name="admin-lifecycle-list"),
+    path("lifecycle/<uuid:id>/", AdminLifecycleRecordDetailView.as_view(), name="admin-lifecycle-detail"),
+    path("lifecycle/<uuid:id>/advance/", AdminLifecycleAdvanceView.as_view(), name="admin-lifecycle-advance"),
+
+    # Assist Suggestions
+    path("assist-suggestions/", AssistSuggestionListCreateView.as_view(), name="assist-suggestion-list"),
+    path("assist-suggestions/<uuid:id>/<str:action>/", AssistSuggestionReviewView.as_view(), name="assist-suggestion-review"),
 ]

@@ -5,3 +5,6 @@ gunicorn==23.0.0
 psycopg[binary]==3.2.10
 sentry-sdk==2.19.2
 django-storages[boto3]==1.14.4
+celery==5.4.0
+redis==5.2.1
+django-celery-beat==2.7.0

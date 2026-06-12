@@ -1094,6 +1094,11 @@ class StudentDocument(models.Model):
     uploaded_at = models.DateTimeField(default=timezone.now)
     reviewed_at = models.DateTimeField(null=True, blank=True)
 
+    # Retention: set when tenancy ends. Documents purged after this date.
+    # PASSPORT/VISA = tenancy_end + 365 days; others = 180 days post-application close.
+    retained_until = models.DateTimeField(null=True, blank=True)
+    purged_at = models.DateTimeField(null=True, blank=True)
+
     class Meta:
         indexes = [
             models.Index(fields=["user", "document_type"]),
@@ -1102,6 +1107,7 @@ class StudentDocument(models.Model):
             models.Index(fields=["verification_status"]),
             models.Index(fields=["expiry_date"]),
             models.Index(fields=["uploaded_at"]),
+            models.Index(fields=["retained_until"]),
         ]
 
 
@@ -1228,3 +1234,398 @@ class AuditLog(models.Model):
             models.Index(fields=["action"]),
             models.Index(fields=["created_at"]),
         ]
+
+
+# ── AGENCY PARTNER SYSTEM ────────────────────────────────────────────────────
+
+class AgencyPartnerStatus(models.TextChoices):
+    ACTIVE = "ACTIVE", "Active"
+    SUSPENDED = "SUSPENDED", "Suspended"
+    PENDING = "PENDING", "Pending Approval"
+
+
+class AgencyPartner(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=200)
+    contact_email = models.EmailField(unique=True)
+    contact_phone = models.CharField(max_length=40, blank=True)
+    address = models.TextField(blank=True)
+    # Commission rate as decimal — e.g. 0.05 = 5%
+    commission_rate = models.DecimalField(max_digits=5, decimal_places=4, default=0.05)
+    status = models.CharField(max_length=20, choices=AgencyPartnerStatus.choices, default=AgencyPartnerStatus.PENDING)
+    api_key = models.CharField(max_length=64, unique=True, blank=True)
+    notes = models.TextField(blank=True)
+    created_by = models.ForeignKey(
+        "accounts.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="created_agency_partners"
+    )
+    created_at = models.DateTimeField(default=timezone.now)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["status"]),
+            models.Index(fields=["created_at"]),
+        ]
+
+    def save(self, *args, **kwargs):
+        if not self.api_key:
+            import secrets as _secrets
+            self.api_key = _secrets.token_hex(32)
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.name} ({self.status})"
+
+
+class AgencyReferralStatus(models.TextChoices):
+    SUBMITTED = "SUBMITTED", "Submitted"
+    INTAKE = "INTAKE", "Intake Registered"
+    IN_PROGRESS = "IN_PROGRESS", "In Progress"
+    TENANCY_ACTIVE = "TENANCY_ACTIVE", "Tenancy Active"
+    COMPLETED = "COMPLETED", "Completed"
+    CANCELLED = "CANCELLED", "Cancelled"
+
+
+class AgencyReferral(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    agency = models.ForeignKey(AgencyPartner, on_delete=models.CASCADE, related_name="referrals")
+    student_user = models.ForeignKey(
+        "accounts.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="agency_referrals"
+    )
+    application = models.ForeignKey(
+        HousingApplication, null=True, blank=True, on_delete=models.SET_NULL, related_name="agency_referral"
+    )
+    referral_code = models.CharField(max_length=40, unique=True)
+    student_name = models.CharField(max_length=150)
+    student_email = models.EmailField()
+    student_phone = models.CharField(max_length=40, blank=True)
+    notes = models.TextField(blank=True)
+    status = models.CharField(max_length=20, choices=AgencyReferralStatus.choices, default=AgencyReferralStatus.SUBMITTED)
+    submitted_at = models.DateTimeField(default=timezone.now)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["agency", "status"]),
+            models.Index(fields=["referral_code"]),
+            models.Index(fields=["submitted_at"]),
+        ]
+
+    def save(self, *args, **kwargs):
+        if not self.referral_code:
+            import secrets as _secrets
+            self.referral_code = f"AGY-{_secrets.token_hex(6).upper()}"
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.referral_code} — {self.student_email}"
+
+
+class CommissionStatus(models.TextChoices):
+    PENDING = "PENDING", "Pending"
+    PAYABLE = "PAYABLE", "Payable"
+    PAID = "PAID", "Paid"
+    CANCELLED = "CANCELLED", "Cancelled"
+
+
+class ReferralCommission(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    referral = models.OneToOneField(AgencyReferral, on_delete=models.CASCADE, related_name="commission")
+    amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    currency = models.CharField(max_length=10, default="GBP")
+    status = models.CharField(max_length=20, choices=CommissionStatus.choices, default=CommissionStatus.PENDING)
+    notes = models.TextField(blank=True)
+    created_at = models.DateTimeField(default=timezone.now)
+    payable_at = models.DateTimeField(null=True, blank=True)
+    paid_at = models.DateTimeField(null=True, blank=True)
+    paid_by = models.ForeignKey(
+        "accounts.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="paid_commissions"
+    )
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["status"]),
+            models.Index(fields=["created_at"]),
+        ]
+
+    def __str__(self):
+        return f"Commission {self.referral.referral_code}: £{self.amount} ({self.status})"
+
+
+# ── BOOKING HOLD ─────────────────────────────────────────────────────────────
+
+class BookingHoldStatus(models.TextChoices):
+    REQUESTED = "REQUESTED", "Requested"
+    ADMIN_REVIEW = "ADMIN_REVIEW", "Admin Review"
+    APPROVED = "APPROVED", "Approved"
+    PROPERTY_RESERVED = "PROPERTY_RESERVED", "Property Reserved"
+    REJECTED = "REJECTED", "Rejected"
+    EXPIRED = "EXPIRED", "Expired"
+    CANCELLED = "CANCELLED", "Cancelled"
+
+
+class BookingHold(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    student = models.ForeignKey(
+        "accounts.User", on_delete=models.CASCADE, related_name="booking_holds"
+    )
+    property = models.ForeignKey(
+        Property, on_delete=models.CASCADE, related_name="booking_holds"
+    )
+    application = models.ForeignKey(
+        HousingApplication, null=True, blank=True, on_delete=models.SET_NULL, related_name="booking_holds"
+    )
+    status = models.CharField(
+        max_length=20, choices=BookingHoldStatus.choices, default=BookingHoldStatus.REQUESTED
+    )
+    student_notes = models.TextField(blank=True)
+    admin_notes = models.TextField(blank=True)
+    reviewed_by = models.ForeignKey(
+        "accounts.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="reviewed_booking_holds"
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    expires_at = models.DateTimeField(null=True, blank=True)
+    requested_at = models.DateTimeField(default=timezone.now)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["student", "status"]),
+            models.Index(fields=["property", "status"]),
+            models.Index(fields=["status"]),
+            models.Index(fields=["expires_at"]),
+        ]
+
+    def __str__(self):
+        return f"Hold({self.student_id}, {self.property_id}, {self.status})"
+
+
+# ── TENANCY CONTRACT RECORD ──────────────────────────────────────────────────
+
+class ContractFieldStatus(models.TextChoices):
+    NOT_STARTED = "NOT_STARTED", "Not Started"
+    IN_PROGRESS = "IN_PROGRESS", "In Progress"
+    COMPLETE = "COMPLETE", "Complete"
+    FAILED = "FAILED", "Failed"
+
+
+class TenancyContractRecord(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenancy = models.OneToOneField(
+        Tenancy, on_delete=models.CASCADE, related_name="contract_record"
+    )
+    agreement_status = models.CharField(
+        max_length=20, choices=ContractFieldStatus.choices, default=ContractFieldStatus.NOT_STARTED
+    )
+    right_to_rent_status = models.CharField(
+        max_length=20, choices=ContractFieldStatus.choices, default=ContractFieldStatus.NOT_STARTED
+    )
+    inventory_status = models.CharField(
+        max_length=20, choices=ContractFieldStatus.choices, default=ContractFieldStatus.NOT_STARTED
+    )
+    deposit_status = models.CharField(
+        max_length=20, choices=ContractFieldStatus.choices, default=ContractFieldStatus.NOT_STARTED
+    )
+    notes = models.TextField(blank=True)
+    updated_by = models.ForeignKey(
+        "accounts.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="updated_contract_records"
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        indexes = [models.Index(fields=["tenancy"])]
+
+    def __str__(self):
+        return f"ContractRecord(tenancy={self.tenancy_id})"
+
+
+# ── WORKFLOW TASK QUEUE ──────────────────────────────────────────────────────
+
+class WorkflowTaskType(models.TextChoices):
+    VERIFY_DOCUMENT = "VERIFY_DOCUMENT", "Verify Document"
+    CONFIRM_MATCH = "CONFIRM_MATCH", "Confirm Match"
+    ISSUE_CONTRACT = "ISSUE_CONTRACT", "Issue Contract"
+    SCHEDULE_INSPECTION = "SCHEDULE_INSPECTION", "Schedule Inspection"
+    RESOLVE_COMPLAINT = "RESOLVE_COMPLAINT", "Resolve Complaint"
+    PROCESS_RENEWAL = "PROCESS_RENEWAL", "Process Renewal"
+    REVIEW_HOLD = "REVIEW_HOLD", "Review Booking Hold"
+    OTHER = "OTHER", "Other"
+
+
+class WorkflowTaskStatus(models.TextChoices):
+    OPEN = "OPEN", "Open"
+    IN_PROGRESS = "IN_PROGRESS", "In Progress"
+    BLOCKED = "BLOCKED", "Blocked"
+    DONE = "DONE", "Done"
+    CANCELLED = "CANCELLED", "Cancelled"
+
+
+class WorkflowTaskPriority(models.TextChoices):
+    LOW = "LOW", "Low"
+    NORMAL = "NORMAL", "Normal"
+    HIGH = "HIGH", "High"
+    URGENT = "URGENT", "Urgent"
+
+
+class WorkflowTask(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    task_type = models.CharField(
+        max_length=30, choices=WorkflowTaskType.choices, default=WorkflowTaskType.OTHER
+    )
+    title = models.CharField(max_length=250)
+    description = models.TextField(blank=True)
+    status = models.CharField(
+        max_length=20, choices=WorkflowTaskStatus.choices, default=WorkflowTaskStatus.OPEN
+    )
+    priority = models.CharField(
+        max_length=10, choices=WorkflowTaskPriority.choices, default=WorkflowTaskPriority.NORMAL
+    )
+    assigned_to = models.ForeignKey(
+        "accounts.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="assigned_tasks"
+    )
+    created_by = models.ForeignKey(
+        "accounts.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="created_tasks"
+    )
+    application = models.ForeignKey(
+        HousingApplication, null=True, blank=True, on_delete=models.SET_NULL, related_name="workflow_tasks"
+    )
+    tenancy = models.ForeignKey(
+        Tenancy, null=True, blank=True, on_delete=models.SET_NULL, related_name="workflow_tasks"
+    )
+    due_date = models.DateTimeField(null=True, blank=True)
+    blocked_reason = models.CharField(max_length=500, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(default=timezone.now)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["status", "priority"]),
+            models.Index(fields=["assigned_to", "status"]),
+            models.Index(fields=["due_date"]),
+            models.Index(fields=["task_type"]),
+        ]
+
+    def __str__(self):
+        return f"[{self.priority}] {self.title} ({self.status})"
+
+
+# ── LIFECYCLE RECORD ─────────────────────────────────────────────────────────
+
+class LifecycleStage(models.TextChoices):
+    INQUIRY = "INQUIRY", "Inquiry"
+    VERIFY = "VERIFY", "Verify"
+    MATCH = "MATCH", "Match"
+    ALLOCATE = "ALLOCATE", "Allocate"
+    CONTRACT = "CONTRACT", "Contract"
+    ONBOARD = "ONBOARD", "Onboard"
+    MOVE_IN = "MOVE_IN", "Move In"
+    ACTIVE = "ACTIVE", "Active"
+    CARE = "CARE", "Care"
+    RENEWAL = "RENEWAL", "Renewal"
+    EXIT = "EXIT", "Exit"
+
+
+class LifecycleRecord(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    student = models.ForeignKey(
+        "accounts.User", on_delete=models.CASCADE, related_name="lifecycle_records"
+    )
+    current_stage = models.CharField(
+        max_length=20, choices=LifecycleStage.choices, default=LifecycleStage.INQUIRY
+    )
+    application = models.ForeignKey(
+        HousingApplication, null=True, blank=True, on_delete=models.SET_NULL, related_name="lifecycle_record"
+    )
+    tenancy = models.ForeignKey(
+        Tenancy, null=True, blank=True, on_delete=models.SET_NULL, related_name="lifecycle_record"
+    )
+    agency_referral = models.ForeignKey(
+        AgencyReferral, null=True, blank=True, on_delete=models.SET_NULL, related_name="lifecycle_record"
+    )
+    notes = models.TextField(blank=True)
+    stage_entered_at = models.DateTimeField(default=timezone.now)
+    last_updated_at = models.DateTimeField(auto_now=True)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["student", "current_stage"]),
+            models.Index(fields=["current_stage"]),
+            models.Index(fields=["created_at"]),
+        ]
+
+    def __str__(self):
+        return f"Lifecycle({self.student_id}, {self.current_stage})"
+
+
+class LifecycleEvent(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    record = models.ForeignKey(LifecycleRecord, on_delete=models.CASCADE, related_name="events")
+    from_stage = models.CharField(max_length=20, choices=LifecycleStage.choices, blank=True)
+    to_stage = models.CharField(max_length=20, choices=LifecycleStage.choices)
+    description = models.CharField(max_length=500, blank=True)
+    created_by = models.ForeignKey(
+        "accounts.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="lifecycle_events"
+    )
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["record", "created_at"]),
+        ]
+
+
+# ── ASSIST SUGGESTION ────────────────────────────────────────────────────────
+
+class SuggestionType(models.TextChoices):
+    MATCH_PROPERTY = "MATCH_PROPERTY", "Match Property"
+    ESCALATE_COMPLAINT = "ESCALATE_COMPLAINT", "Escalate Complaint"
+    SCHEDULE_RENEWAL = "SCHEDULE_RENEWAL", "Schedule Renewal"
+    FLAG_RISK = "FLAG_RISK", "Flag Risk"
+    SEND_REMINDER = "SEND_REMINDER", "Send Reminder"
+    OTHER = "OTHER", "Other"
+
+
+class SuggestionStatus(models.TextChoices):
+    DRAFT = "DRAFT", "Draft"
+    REVIEWED = "REVIEWED", "Reviewed"
+    APPROVED = "APPROVED", "Approved"
+    REJECTED = "REJECTED", "Rejected"
+
+
+class AssistSuggestion(models.Model):
+    """Human-reviewed AI suggestion. Never auto-approved — operator must act."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    suggestion_type = models.CharField(
+        max_length=30, choices=SuggestionType.choices, default=SuggestionType.OTHER
+    )
+    title = models.CharField(max_length=250)
+    body = models.TextField()
+    confidence_score = models.FloatField(null=True, blank=True)
+    status = models.CharField(
+        max_length=20, choices=SuggestionStatus.choices, default=SuggestionStatus.DRAFT
+    )
+    application = models.ForeignKey(
+        HousingApplication, null=True, blank=True, on_delete=models.SET_NULL, related_name="assist_suggestions"
+    )
+    tenancy = models.ForeignKey(
+        Tenancy, null=True, blank=True, on_delete=models.SET_NULL, related_name="assist_suggestions"
+    )
+    reviewed_by = models.ForeignKey(
+        "accounts.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="reviewed_suggestions"
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    reviewer_notes = models.TextField(blank=True)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["status"]),
+            models.Index(fields=["suggestion_type"]),
+            models.Index(fields=["created_at"]),
+        ]
+
+    def __str__(self):
+        return f"[{self.suggestion_type}] {self.title} ({self.status})"

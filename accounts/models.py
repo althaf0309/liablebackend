@@ -204,3 +204,46 @@ class PasswordResetOTP(models.Model):
 
     def verify(self, otp: str) -> bool:
         return check_password(otp, self.otp_hash)
+
+
+class ErasureStatus(models.TextChoices):
+    REQUESTED = "REQUESTED", "Requested"
+    ADMIN_REVIEW = "ADMIN_REVIEW", "Admin Review"
+    EXECUTED = "EXECUTED", "Executed"
+    REJECTED = "REJECTED", "Rejected"
+
+
+class DataErasureRequest(models.Model):
+    """GDPR Article 17 right-to-erasure request. Admin must execute manually."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name="erasure_requests",
+    )
+    user_email_snapshot = models.EmailField()
+    reason = models.TextField(blank=True)
+    status = models.CharField(
+        max_length=20, choices=ErasureStatus.choices, default=ErasureStatus.REQUESTED
+    )
+    requested_at = models.DateTimeField(default=timezone.now)
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="reviewed_erasure_requests",
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    admin_notes = models.TextField(blank=True)
+    executed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["status"]),
+            models.Index(fields=["requested_at"]),
+        ]
+
+    def __str__(self):
+        return f"ErasureRequest({self.user_email_snapshot}, {self.status})"

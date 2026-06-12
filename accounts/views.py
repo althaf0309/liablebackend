@@ -22,6 +22,8 @@ from .models import (
     UserRole,
     VerificationStatus,
     PasswordResetOTP,
+    DataErasureRequest,
+    ErasureStatus,
 )
 from .serializers import (
     LandlordRegisterSerializer,
@@ -416,3 +418,54 @@ class ForgotPasswordOTPVerifyView(APIView):
         t.save(update_fields=["used_at"])
 
         return Response({"message": "Password reset successful"}, status=status.HTTP_200_OK)
+
+
+# -----------------------------
+# GDPR: DATA ERASURE REQUEST
+# -----------------------------
+@method_decorator(csrf_protect, name="dispatch")
+class RequestErasureView(APIView):
+    """Student submits a right-to-erasure request. Admin must execute separately."""
+    authentication_classes = [SessionAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        existing = DataErasureRequest.objects.filter(
+            user=request.user,
+            status__in=[ErasureStatus.REQUESTED, ErasureStatus.ADMIN_REVIEW],
+        ).first()
+        if existing:
+            return Response(
+                {"detail": "You already have a pending erasure request."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        reason = request.data.get("reason", "").strip()[:1000]
+        req = DataErasureRequest.objects.create(
+            user=request.user,
+            user_email_snapshot=request.user.email,
+            reason=reason,
+            status=ErasureStatus.REQUESTED,
+        )
+        return Response(
+            {
+                "id": str(req.id),
+                "status": req.status,
+                "requested_at": req.requested_at,
+                "detail": "Erasure request submitted. A Liable administrator will review and action within 30 days.",
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+    def get(self, request):
+        req = DataErasureRequest.objects.filter(user=request.user).order_by("-requested_at").first()
+        if not req:
+            return Response({"detail": "No erasure request found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(
+            {
+                "id": str(req.id),
+                "status": req.status,
+                "requested_at": req.requested_at,
+                "executed_at": req.executed_at,
+            }
+        )

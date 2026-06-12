@@ -87,6 +87,7 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "rest_framework",
     "corsheaders",
+    "django_celery_beat",
     "core",
     "accounts",
     "analytics",
@@ -249,11 +250,46 @@ MAIL_BRAND_NAME = os.getenv("MAIL_BRAND_NAME", "Liable")
 CONTACT_ADMIN_EMAILS = env_list("CONTACT_ADMIN_EMAILS", EMAIL_HOST_USER or DEFAULT_FROM_EMAIL)
 
 
-CACHES = {
-    "default": {
-        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
-        "LOCATION": "liable-default",
+_REDIS_URL = os.getenv("REDIS_URL", "")
+
+if _REDIS_URL:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.redis.RedisCache",
+            "LOCATION": _REDIS_URL,
+        }
     }
+else:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "liable-default",
+        }
+    }
+
+# ── Celery ───────────────────────────────────────────────────────────────────
+CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", _REDIS_URL or "memory://localhost/")
+CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", _REDIS_URL or "cache+memory://")
+CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_TASK_SERIALIZER = "json"
+CELERY_RESULT_SERIALIZER = "json"
+CELERY_TIMEZONE = "UTC"
+CELERY_TASK_TRACK_STARTED = True
+CELERY_TASK_TIME_LIMIT = 300  # 5 min hard limit per task
+
+CELERY_BEAT_SCHEDULE = {
+    "assist-reminders-hourly": {
+        "task": "core.tasks.run_assist_reminders",
+        "schedule": 3600,  # every hour
+    },
+    "expire-booking-holds-hourly": {
+        "task": "core.tasks.run_expire_booking_holds",
+        "schedule": 3600,
+    },
+    "purge-expired-documents-daily": {
+        "task": "core.tasks.run_purge_expired_documents",
+        "schedule": 86400,  # every 24 hours
+    },
 }
 
 
