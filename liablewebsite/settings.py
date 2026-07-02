@@ -97,6 +97,10 @@ USE_S3_PRIVATE_STORAGE = env_bool("USE_S3_PRIVATE_STORAGE", False)
 if USE_S3_PRIVATE_STORAGE:
     INSTALLED_APPS.append("storages")
 
+MALWARE_SCAN_REQUIRED = env_bool("MALWARE_SCAN_REQUIRED", False)
+MALWARE_SCAN_COMMAND = os.getenv("MALWARE_SCAN_COMMAND", "").strip()
+MALWARE_SCAN_TIMEOUT = int(os.getenv("MALWARE_SCAN_TIMEOUT", "30"))
+
 
 MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",

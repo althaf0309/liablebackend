@@ -23,6 +23,7 @@ from .quantum_flow import create_application_for_user
 from .support import create_support_event
 from .throttles import ContactCreateRateThrottle
 from .tenancy_intelligence import refresh_tenancy_health_score
+from .upload_security import scan_metadata, scan_uploaded_file
 
 
 ALLOWED_PRIVATE_UPLOAD_TYPES = {
@@ -476,6 +477,9 @@ class MyStudentDocumentListCreateView(APIView):
         error = validate_private_upload(uploaded_file)
         if error:
             return Response({"detail": error}, status=status.HTTP_400_BAD_REQUEST)
+        scan_result = scan_uploaded_file(uploaded_file)
+        if scan_result.blocks_upload:
+            return Response({"detail": scan_result.detail}, status=status.HTTP_400_BAD_REQUEST)
         application = None
         application_id = request.data.get("application")
         if application_id:
@@ -499,6 +503,7 @@ class MyStudentDocumentListCreateView(APIView):
             content_type=uploaded_file.content_type or "",
             file_size=uploaded_file.size,
             expiry_date=expiry_date,
+            **scan_metadata(scan_result),
         )
         if application:
             refresh_application_verification_state(application)
@@ -514,6 +519,7 @@ class MyStudentDocumentListCreateView(APIView):
                 "requirement_stage": document.requirement_stage,
                 "content_type": document.content_type,
                 "file_size": document.file_size,
+                "malware_scan_status": document.malware_scan_status,
                 "expiry_date": expiry_raw or None,
             },
         )
@@ -534,6 +540,9 @@ class MyComplaintAttachmentCreateView(APIView):
         error = validate_private_upload(uploaded_file)
         if error:
             return Response({"detail": error}, status=status.HTTP_400_BAD_REQUEST)
+        scan_result = scan_uploaded_file(uploaded_file)
+        if scan_result.blocks_upload:
+            return Response({"detail": scan_result.detail}, status=status.HTTP_400_BAD_REQUEST)
 
         attachment = ComplaintAttachment.objects.create(
             complaint=complaint,
@@ -541,6 +550,7 @@ class MyComplaintAttachmentCreateView(APIView):
             original_filename=uploaded_file.name,
             content_type=uploaded_file.content_type or "",
             file_size=uploaded_file.size,
+            **scan_metadata(scan_result),
         )
         write_audit_log(
             request,
@@ -550,6 +560,7 @@ class MyComplaintAttachmentCreateView(APIView):
                 "complaint_id": str(complaint.id),
                 "content_type": attachment.content_type,
                 "file_size": attachment.file_size,
+                "malware_scan_status": attachment.malware_scan_status,
             },
         )
         return Response(ComplaintAttachmentSerializer(attachment).data, status=status.HTTP_201_CREATED)
@@ -602,6 +613,9 @@ class MyCareTicketAttachmentCreateView(APIView):
         error = validate_private_upload(uploaded_file)
         if error:
             return Response({"detail": error}, status=status.HTTP_400_BAD_REQUEST)
+        scan_result = scan_uploaded_file(uploaded_file)
+        if scan_result.blocks_upload:
+            return Response({"detail": scan_result.detail}, status=status.HTTP_400_BAD_REQUEST)
         attachment = CareTicketAttachment.objects.create(
             ticket=ticket,
             uploaded_by=request.user,
@@ -609,6 +623,7 @@ class MyCareTicketAttachmentCreateView(APIView):
             original_filename=uploaded_file.name,
             content_type=uploaded_file.content_type or "",
             file_size=uploaded_file.size,
+            **scan_metadata(scan_result),
             landlord_visible=str(request.data.get("landlord_visible", "true")).lower() != "false",
         )
         write_audit_log(
@@ -619,6 +634,7 @@ class MyCareTicketAttachmentCreateView(APIView):
                 "ticket_id": str(ticket.id),
                 "content_type": attachment.content_type,
                 "file_size": attachment.file_size,
+                "malware_scan_status": attachment.malware_scan_status,
                 "landlord_visible": attachment.landlord_visible,
             },
         )
@@ -677,6 +693,9 @@ class MySupportRequestAttachmentCreateView(APIView):
         error = validate_private_upload(uploaded_file)
         if error:
             return Response({"detail": error}, status=status.HTTP_400_BAD_REQUEST)
+        scan_result = scan_uploaded_file(uploaded_file)
+        if scan_result.blocks_upload:
+            return Response({"detail": scan_result.detail}, status=status.HTTP_400_BAD_REQUEST)
         attachment = SupportRequestAttachment.objects.create(
             support_request=support_request,
             uploaded_by=request.user,
@@ -684,6 +703,7 @@ class MySupportRequestAttachmentCreateView(APIView):
             original_filename=uploaded_file.name,
             content_type=uploaded_file.content_type or "",
             file_size=uploaded_file.size,
+            **scan_metadata(scan_result),
             partner_visible=str(request.data.get("partner_visible", "false")).lower() == "true",
         )
         write_audit_log(
@@ -694,6 +714,7 @@ class MySupportRequestAttachmentCreateView(APIView):
                 "support_request_id": str(support_request.id),
                 "content_type": attachment.content_type,
                 "file_size": attachment.file_size,
+                "malware_scan_status": attachment.malware_scan_status,
                 "partner_visible": attachment.partner_visible,
             },
         )

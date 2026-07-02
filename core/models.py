@@ -746,6 +746,14 @@ class CareTicketEventType(models.TextChoices):
     CLOSED = "CLOSED", "Closed"
 
 
+class MalwareScanStatus(models.TextChoices):
+    NOT_REQUIRED = "NOT_REQUIRED", "Not Required"
+    PENDING = "PENDING", "Pending"
+    CLEAN = "CLEAN", "Clean"
+    FAILED = "FAILED", "Failed"
+    INFECTED = "INFECTED", "Infected"
+
+
 class CareTicket(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.ForeignKey("accounts.User", on_delete=models.CASCADE, related_name="care_tickets")
@@ -813,6 +821,9 @@ class CareTicketAttachment(models.Model):
     original_filename = models.CharField(max_length=255)
     content_type = models.CharField(max_length=120, blank=True)
     file_size = models.PositiveIntegerField(default=0)
+    malware_scan_status = models.CharField(max_length=20, choices=MalwareScanStatus.choices, default=MalwareScanStatus.NOT_REQUIRED)
+    malware_scanned_at = models.DateTimeField(null=True, blank=True)
+    malware_scan_details = models.CharField(max_length=240, blank=True)
     landlord_visible = models.BooleanField(default=True)
     uploaded_at = models.DateTimeField(default=timezone.now)
 
@@ -820,6 +831,7 @@ class CareTicketAttachment(models.Model):
         indexes = [
             models.Index(fields=["ticket"]),
             models.Index(fields=["uploaded_by"]),
+            models.Index(fields=["malware_scan_status"]),
             models.Index(fields=["uploaded_at"]),
         ]
 
@@ -927,6 +939,9 @@ class SupportRequestAttachment(models.Model):
     original_filename = models.CharField(max_length=255)
     content_type = models.CharField(max_length=120, blank=True)
     file_size = models.PositiveIntegerField(default=0)
+    malware_scan_status = models.CharField(max_length=20, choices=MalwareScanStatus.choices, default=MalwareScanStatus.NOT_REQUIRED)
+    malware_scanned_at = models.DateTimeField(null=True, blank=True)
+    malware_scan_details = models.CharField(max_length=240, blank=True)
     partner_visible = models.BooleanField(default=False)
     uploaded_at = models.DateTimeField(default=timezone.now)
 
@@ -934,6 +949,7 @@ class SupportRequestAttachment(models.Model):
         indexes = [
             models.Index(fields=["support_request"]),
             models.Index(fields=["uploaded_by"]),
+            models.Index(fields=["malware_scan_status"]),
             models.Index(fields=["uploaded_at"]),
         ]
 
@@ -1079,6 +1095,9 @@ class StudentDocument(models.Model):
     original_filename = models.CharField(max_length=255)
     content_type = models.CharField(max_length=120, blank=True)
     file_size = models.PositiveIntegerField(default=0)
+    malware_scan_status = models.CharField(max_length=20, choices=MalwareScanStatus.choices, default=MalwareScanStatus.NOT_REQUIRED)
+    malware_scanned_at = models.DateTimeField(null=True, blank=True)
+    malware_scan_details = models.CharField(max_length=240, blank=True)
     verification_status = models.CharField(max_length=30, choices=VerificationState.choices, default=VerificationState.PENDING)
     expiry_date = models.DateField(null=True, blank=True)
     resubmission_requested_at = models.DateTimeField(null=True, blank=True)
@@ -1105,6 +1124,7 @@ class StudentDocument(models.Model):
             models.Index(fields=["application", "document_type"]),
             models.Index(fields=["requirement_stage"]),
             models.Index(fields=["verification_status"]),
+            models.Index(fields=["malware_scan_status"]),
             models.Index(fields=["expiry_date"]),
             models.Index(fields=["uploaded_at"]),
             models.Index(fields=["retained_until"]),
@@ -1118,11 +1138,15 @@ class ComplaintAttachment(models.Model):
     original_filename = models.CharField(max_length=255)
     content_type = models.CharField(max_length=120, blank=True)
     file_size = models.PositiveIntegerField(default=0)
+    malware_scan_status = models.CharField(max_length=20, choices=MalwareScanStatus.choices, default=MalwareScanStatus.NOT_REQUIRED)
+    malware_scanned_at = models.DateTimeField(null=True, blank=True)
+    malware_scan_details = models.CharField(max_length=240, blank=True)
     uploaded_at = models.DateTimeField(default=timezone.now)
 
     class Meta:
         indexes = [
             models.Index(fields=["complaint"]),
+            models.Index(fields=["malware_scan_status"]),
             models.Index(fields=["uploaded_at"]),
         ]
 

@@ -464,13 +464,15 @@ class StudentDocumentSerializer(serializers.ModelSerializer):
         fields = [
             "id", "user", "user_email", "user_name", "application", "document_type", "requirement_stage",
             "original_filename", "content_type",
-            "file_size", "verification_status", "expiry_date", "resubmission_requested_at",
+            "file_size", "malware_scan_status", "malware_scanned_at", "malware_scan_details",
+            "verification_status", "expiry_date", "resubmission_requested_at",
             "student_message", "admin_notes",
             "reviewed_by", "reviewed_by_email", "student_review_message",
             "uploaded_at", "reviewed_at", "download_url",
         ]
         read_only_fields = [
             "id", "user", "original_filename", "content_type", "file_size",
+            "malware_scan_status", "malware_scanned_at", "malware_scan_details",
             "resubmission_requested_at", "reviewed_by", "reviewed_by_email", "student_review_message",
             "uploaded_at", "reviewed_at", "download_url",
         ]
@@ -494,6 +496,7 @@ class StudentDocumentSerializer(serializers.ModelSerializer):
             data.pop("admin_notes", None)
             data.pop("reviewed_by", None)
             data.pop("reviewed_by_email", None)
+            data.pop("malware_scan_details", None)
         return data
 
 
@@ -504,7 +507,8 @@ class ComplaintAttachmentSerializer(serializers.ModelSerializer):
         model = ComplaintAttachment
         fields = [
             "id", "complaint", "original_filename", "content_type",
-            "file_size", "uploaded_at", "download_url",
+            "file_size", "malware_scan_status", "malware_scanned_at", "malware_scan_details",
+            "uploaded_at", "download_url",
         ]
         read_only_fields = fields
 
@@ -549,7 +553,8 @@ class CareTicketAttachmentSerializer(serializers.ModelSerializer):
         model = CareTicketAttachment
         fields = [
             "id", "ticket", "uploaded_by", "uploaded_by_email", "original_filename",
-            "content_type", "file_size", "landlord_visible", "uploaded_at", "download_url",
+            "content_type", "file_size", "malware_scan_status", "malware_scanned_at",
+            "malware_scan_details", "landlord_visible", "uploaded_at", "download_url",
         ]
         read_only_fields = fields
 
@@ -630,7 +635,8 @@ class SupportRequestAttachmentSerializer(serializers.ModelSerializer):
         model = SupportRequestAttachment
         fields = [
             "id", "support_request", "uploaded_by", "uploaded_by_email", "original_filename",
-            "content_type", "file_size", "partner_visible", "uploaded_at", "download_url",
+            "content_type", "file_size", "malware_scan_status", "malware_scanned_at",
+            "malware_scan_details", "partner_visible", "uploaded_at", "download_url",
         ]
         read_only_fields = fields
 

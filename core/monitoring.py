@@ -3,11 +3,13 @@ import shutil
 from datetime import datetime, timezone as datetime_timezone
 
 from django.conf import settings
+from django.core.cache import cache
 from django.db import connection
 from django.db.migrations.executor import MigrationExecutor
 from django.utils import timezone
 
 from .models import AuditLog
+from .upload_security import malware_scan_configured
 
 
 def _check(name, status, message, severity="info", details=None):
@@ -126,6 +128,83 @@ def _backup_check():
     )
 
 
+def _private_storage_check():
+    if getattr(settings, "USE_S3_PRIVATE_STORAGE", False):
+        bucket = getattr(settings, "AWS_STORAGE_BUCKET_NAME", "")
+        region = getattr(settings, "AWS_S3_REGION_NAME", "")
+        if bucket:
+            return _check(
+                "Private Object Storage",
+                "ok",
+                "Private document storage is configured for S3-compatible object storage.",
+                details={"bucket_configured": True, "region": region},
+            )
+        return _check(
+            "Private Object Storage",
+            "error",
+            "USE_S3_PRIVATE_STORAGE is enabled but AWS_STORAGE_BUCKET_NAME is empty.",
+            "critical",
+        )
+    if not settings.DEBUG:
+        return _check(
+            "Private Object Storage",
+            "warning",
+            "Private documents are stored on local disk. Use object storage before sensitive production rollout.",
+            "high",
+        )
+    return _check("Private Object Storage", "ok", "Local private media storage is acceptable for development.")
+
+
+def _malware_scan_check():
+    required = bool(getattr(settings, "MALWARE_SCAN_REQUIRED", False))
+    configured = malware_scan_configured()
+    if required and configured:
+        return _check("Malware Scanning", "ok", "Private upload malware scanning is required and configured.")
+    if required and not configured:
+        return _check(
+            "Malware Scanning",
+            "error",
+            "MALWARE_SCAN_REQUIRED is true but MALWARE_SCAN_COMMAND is not configured.",
+            "critical",
+        )
+    if not required and not settings.DEBUG:
+        return _check(
+            "Malware Scanning",
+            "warning",
+            "Malware scanning is not required. Enable it before accepting sensitive uploads in production.",
+            "high",
+        )
+    return _check("Malware Scanning", "ok", "Malware scanning is optional in this environment.")
+
+
+def _celery_check():
+    broker = getattr(settings, "CELERY_BROKER_URL", "")
+    backend = getattr(settings, "CELERY_RESULT_BACKEND", "")
+    using_memory = broker.startswith("memory://") or backend.startswith("cache+memory://")
+    if using_memory and not settings.DEBUG:
+        return _check(
+            "Celery/Redis",
+            "warning",
+            "Celery is using an in-memory broker/backend. Configure Redis for production automation.",
+            "high",
+            {"broker": broker, "result_backend": backend},
+        )
+    try:
+        cache_key = "production_monitoring_cache_probe"
+        cache.set(cache_key, "ok", timeout=15)
+        cache_ok = cache.get(cache_key) == "ok"
+    except Exception as exc:
+        return _check("Celery/Redis", "warning", "Cache/Redis probe failed.", "medium", {"error": str(exc)})
+    status_value = "ok" if cache_ok else "warning"
+    return _check(
+        "Celery/Redis",
+        status_value,
+        "Celery broker/backend configuration is present.",
+        "info" if status_value == "ok" else "medium",
+        {"broker": broker, "result_backend": backend, "cache_probe": cache_ok},
+    )
+
+
 def _disk_check():
     target = getattr(settings, "PRIVATE_MEDIA_ROOT", settings.BASE_DIR)
     try:
@@ -166,6 +245,9 @@ def build_production_monitoring_status():
         _sentry_check(),
         _security_check(),
         _backup_check(),
+        _private_storage_check(),
+        _malware_scan_check(),
+        _celery_check(),
         _disk_check(),
     ]
     if any(item["status"] == "error" for item in checks):
@@ -186,5 +268,7 @@ def build_production_monitoring_status():
             "allowed_hosts_count": len(settings.ALLOWED_HOSTS),
             "sentry_configured": bool(getattr(settings, "SENTRY_DSN", "")),
             "private_storage": "s3" if getattr(settings, "USE_S3_PRIVATE_STORAGE", False) else "local",
+            "malware_scan_required": bool(getattr(settings, "MALWARE_SCAN_REQUIRED", False)),
+            "celery_broker": getattr(settings, "CELERY_BROKER_URL", ""),
         },
     }
